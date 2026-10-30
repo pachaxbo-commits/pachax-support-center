@@ -7,6 +7,11 @@ export const RoleSelectorPill: React.FC = () => {
   const { currentUser, role, switchDemoRole, isDemoMode } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
 
+  // In production environments, completely disable and hide the demo role switcher
+  if (import.meta.env.PROD && !isDemoMode) {
+    return null;
+  }
+
   const rolesList: UserRole[] = [
     'superadmin',
     'dev_owner',
@@ -75,8 +80,13 @@ export const RoleSelectorPill: React.FC = () => {
             </div>
 
             {isDemoMode && (
-              <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800 px-2 text-[10px] text-amber-600 dark:text-amber-400 font-medium">
-                Modo Sandbox / Datos simulados activos
+              <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800 px-2 space-y-1">
+                <div className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold uppercase tracking-wider">
+                  Modo Sandbox Local (Solo UI)
+                </div>
+                <div className="text-[10px] text-slate-500 dark:text-slate-400 leading-tight">
+                  Este selector solo cambia la vista local de desarrollo. No altera tokens ni permisos reales de Firebase Auth ni elude las reglas de Firestore.
+                </div>
               </div>
             )}
           </div>

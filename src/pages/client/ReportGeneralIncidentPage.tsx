@@ -188,9 +188,9 @@ export const ReportGeneralIncidentPage: React.FC = () => {
       setTimeout(() => {
         navigate('/client/history');
       }, 1500);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      alert('Error al enviar el reporte. Por favor intenta nuevamente.');
+      alert(err.message || 'Error al enviar el reporte. Por favor intenta nuevamente.');
     } finally {
       setIsSubmitting(false);
     }

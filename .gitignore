@@ -42,6 +42,8 @@ coverage
 
 # Firebase cache
 .firebase/
+functions/lib/
+functions/node_modules/
 
 *.tsbuildinfo
 

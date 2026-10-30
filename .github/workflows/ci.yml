@@ -31,8 +31,11 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Unit Tests
+      - name: Unit & Integration Tests
         run: npm run test
+
+      - name: Firestore Emulator Security Rules Tests
+        run: npx firebase-tools emulators:exec --only firestore "npx vitest run src/test/emulator"
 
       - name: Build Production Bundle
         run: npm run build

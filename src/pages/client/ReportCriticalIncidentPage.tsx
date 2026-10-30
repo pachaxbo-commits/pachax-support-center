@@ -108,9 +108,9 @@ export const ReportCriticalIncidentPage: React.FC = () => {
       setTimeout(() => {
         navigate('/client/history');
       }, 2500);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      alert('Error al enviar la incidencia crítica.');
+      alert(err.message || 'Error al enviar la incidencia crítica. Por favor verifique e intente nuevamente.');
     } finally {
       setIsSubmitting(false);
     }

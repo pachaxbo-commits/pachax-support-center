@@ -6,29 +6,45 @@ service firebase.storage {
       return request.auth != null;
     }
 
+    function isSuperAdmin() {
+      return isAuthenticated() && request.auth.token.role == 'superadmin';
+    }
+
     function isImage() {
-      return request.resource.contentType.matches('image/.*') &&
-        request.resource.size < 10 * 1024 * 1024; // 10 MB max
+      return request.resource.contentType.matches('image/(jpeg|png|webp)') &&
+        request.resource.size <= 10 * 1024 * 1024; // 10 MB max
     }
 
     function isDocument() {
       return (request.resource.contentType.matches('application/pdf') ||
-              request.resource.contentType.matches('text/.*') ||
+              request.resource.contentType.matches('text/plain') ||
               request.resource.contentType.matches('application/json')) &&
-        request.resource.size < 25 * 1024 * 1024; // 25 MB max
+        request.resource.size <= 25 * 1024 * 1024; // 25 MB max
     }
 
-    // Tenant-isolated storage path:
-    // /tenants/{developerCompanyId}/clients/{clientCompanyId}/projects/{projectId}/...
+    function hasDevAccess(devId) {
+      return isSuperAdmin() ||
+        (isAuthenticated() && request.auth.token.developerCompanyId == devId);
+    }
+
+    function hasClientAccess(clientId) {
+      return isSuperAdmin() ||
+        (isAuthenticated() && request.auth.token.clientCompanyId == clientId);
+    }
+
+    // Multi-tenant isolated storage path:
+    // /tenants/{developerCompanyId}/clients/{clientCompanyId}/projects/{projectId}/incidents/{reportId}/{fileName}
     match /tenants/{devId}/clients/{clientId}/projects/{projId}/{allPaths=**} {
-      allow read: if isAuthenticated();
-      allow write: if isAuthenticated() && (isImage() || isDocument());
+      allow read: if isAuthenticated() && (hasDevAccess(devId) || hasClientAccess(clientId));
+      allow write: if isAuthenticated() &&
+        (hasDevAccess(devId) || hasClientAccess(clientId)) &&
+        (isImage() || isDocument());
     }
 
     // Public / branding assets
     match /branding/{allPaths=**} {
       allow read: if true;
-      allow write: if isAuthenticated();
+      allow write: if isSuperAdmin();
     }
   }
 }

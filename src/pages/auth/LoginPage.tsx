@@ -129,43 +129,45 @@ export const LoginPage: React.FC = () => {
             </span>
           </div>
 
-          {/* Quick Demo Access Bar */}
-          <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">
-              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-              <span>Acceso Rápido Sandbox / Selector de Roles:</span>
+          {/* Quick Demo Access Bar (Development only) */}
+          {!import.meta.env.PROD && (
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">
+                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                <span>Acceso Rápido Sandbox / Selector de Roles:</span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => handleQuickDemoSelect('client_admin')}
+                  className="p-1.5 text-left rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-brand-50 dark:hover:bg-brand-950/60 text-slate-700 dark:text-slate-300 font-medium truncate transition"
+                >
+                  Gerente Cliente (San José)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleQuickDemoSelect('superadmin')}
+                  className="p-1.5 text-left rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-purple-50 dark:hover:bg-purple-950/60 text-slate-700 dark:text-slate-300 font-medium truncate transition"
+                >
+                  Superadmin PACHAX
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleQuickDemoSelect('dev_engineer')}
+                  className="p-1.5 text-left rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-brand-50 dark:hover:bg-brand-950/60 text-slate-700 dark:text-slate-300 font-medium truncate transition"
+                >
+                  Ingeniero de Soporte
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleQuickDemoSelect('client_user')}
+                  className="p-1.5 text-left rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-brand-50 dark:hover:bg-brand-950/60 text-slate-700 dark:text-slate-300 font-medium truncate transition"
+                >
+                  Operador de Cliente
+                </button>
+              </div>
             </div>
-            <div className="grid grid-cols-2 gap-1.5 text-[11px]">
-              <button
-                type="button"
-                onClick={() => handleQuickDemoSelect('client_admin')}
-                className="p-1.5 text-left rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-brand-50 dark:hover:bg-brand-950/60 text-slate-700 dark:text-slate-300 font-medium truncate transition"
-              >
-                Gerente Cliente (San José)
-              </button>
-              <button
-                type="button"
-                onClick={() => handleQuickDemoSelect('superadmin')}
-                className="p-1.5 text-left rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-purple-50 dark:hover:bg-purple-950/60 text-slate-700 dark:text-slate-300 font-medium truncate transition"
-              >
-                Superadmin PACHAX
-              </button>
-              <button
-                type="button"
-                onClick={() => handleQuickDemoSelect('dev_engineer')}
-                className="p-1.5 text-left rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-brand-50 dark:hover:bg-brand-950/60 text-slate-700 dark:text-slate-300 font-medium truncate transition"
-              >
-                Ingeniero de Soporte
-              </button>
-              <button
-                type="button"
-                onClick={() => handleQuickDemoSelect('client_user')}
-                className="p-1.5 text-left rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-brand-50 dark:hover:bg-brand-950/60 text-slate-700 dark:text-slate-300 font-medium truncate transition"
-              >
-                Operador de Cliente
-              </button>
-            </div>
-          </div>
+          )}
         </div>
       </div>
     </div>

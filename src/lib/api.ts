@@ -18,7 +18,7 @@ import {
   DEMO_CLIENTS,
   DEMO_PROJECTS,
 } from './demoData';
-import { isFirebaseConfigured, db } from './firebase';
+import { isFirebaseConfigured, db, functions } from './firebase';
 import {
   collection,
   query,
@@ -30,7 +30,8 @@ import {
   updateDoc,
   serverTimestamp,
 } from 'firebase/firestore';
-import { storageService } from '@/services/storageService';
+import { httpsCallable } from 'firebase/functions';
+import { storageService, StorageUnavailableError } from '@/services/storageService';
 
 // In-Memory state for instant interactive reactivity & preview sessions
 let incidentReportsState: IncidentReport[] = [...INITIAL_INCIDENT_REPORTS];
@@ -187,6 +188,7 @@ export const api = {
     title: string;
     criticalJustification?: string;
     dailyConsent?: boolean;
+    idempotencyKey?: string;
     items: {
       title: string;
       description: string;
@@ -201,24 +203,7 @@ export const api = {
     const reportId = `rep-${payload.category}-${Date.now().toString(36)}`;
     const now = new Date().toISOString();
 
-    const newReport: IncidentReport = {
-      id: reportId,
-      clientCompanyId: payload.clientCompanyId,
-      developerCompanyId: payload.developerCompanyId,
-      projectId: payload.projectId,
-      projectName: payload.projectName || 'Proyecto PACHAX',
-      reportedBy: payload.reportedBy,
-      category: payload.category,
-      title: payload.title,
-      itemsCount: payload.items.length,
-      status: 'received',
-      dailySubmissionConsentConfirmed: payload.dailyConsent,
-      criticalJustification: payload.criticalJustification,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    // Process images and upload to Cloud Storage
+    // 1. Process images and upload to Cloud Storage (strictly no silent fallback)
     const processedItems: IncidentItem[] = [];
     for (let idx = 0; idx < payload.items.length; idx++) {
       const it = payload.items[idx];
@@ -227,20 +212,32 @@ export const api = {
       let finalOriginalUrl = it.originalImageUrl;
       let finalAnnotatedUrl = it.annotatedImageUrl;
 
-      if (it.annotatedImageUrl && it.annotatedImageUrl.startsWith('data:')) {
+      const hasLocalOriginal = it.originalImageUrl && it.originalImageUrl.startsWith('data:');
+      const hasLocalAnnotated = it.annotatedImageUrl && it.annotatedImageUrl.startsWith('data:');
+
+      if (hasLocalOriginal || hasLocalAnnotated) {
         try {
-          const uploadRes = await storageService.uploadIncidentImage({
+          const evidenceResult = await storageService.uploadIncidentEvidencePair({
             developerCompanyId: payload.developerCompanyId,
             clientCompanyId: payload.clientCompanyId,
             projectId: payload.projectId,
             reportId,
             itemId,
-            type: 'annotated',
-            dataUrlOrBase64: it.annotatedImageUrl,
+            originalDataUrl: it.originalImageUrl,
+            annotatedDataUrl: it.annotatedImageUrl,
           });
-          finalAnnotatedUrl = uploadRes.url;
-        } catch (e) {
-          console.warn('[Storage] Fallback guardando imagen en base64:', e);
+
+          if (evidenceResult.originalUrl) {
+            finalOriginalUrl = evidenceResult.originalUrl;
+          }
+          if (evidenceResult.annotatedUrl) {
+            finalAnnotatedUrl = evidenceResult.annotatedUrl;
+          }
+        } catch (uploadErr: any) {
+          console.error('[API] Error al almacenar evidencias:', uploadErr);
+          throw new Error(
+            `Fallo al subir evidencia a Cloud Storage: ${uploadErr.message || 'Error de red'}. El reporte no fue enviado para evitar pérdida de evidencias.`
+          );
         }
       }
 
@@ -268,26 +265,80 @@ export const api = {
       processedItems.push(newItem);
     }
 
-    // Update in-memory state
+    const newReport: IncidentReport = {
+      id: reportId,
+      clientCompanyId: payload.clientCompanyId,
+      developerCompanyId: payload.developerCompanyId,
+      projectId: payload.projectId,
+      projectName: payload.projectName || 'Proyecto PACHAX',
+      reportedBy: payload.reportedBy,
+      category: payload.category,
+      title: payload.title,
+      itemsCount: payload.items.length,
+      status: 'received',
+      dailySubmissionConsentConfirmed: payload.dailyConsent,
+      criticalJustification: payload.criticalJustification,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    // Update in-memory state for UI responsiveness
     incidentReportsState = [newReport, ...incidentReportsState];
     incidentItemsState = [...processedItems, ...incidentItemsState];
 
-    // Persist to live Firestore
-    if (isFirebaseConfigured() && db) {
-      try {
-        await setDoc(doc(db, 'incidentReports', reportId), {
-          ...newReport,
-          serverTimestamp: serverTimestamp(),
-        });
-
-        for (const item of processedItems) {
-          await setDoc(doc(db, 'incidentItems', item.id), {
-            ...item,
+    // Persist to live Firebase backend
+    if (isFirebaseConfigured()) {
+      if (payload.category === 'general' && functions) {
+        // Enforce transactional quota check via Cloud Function
+        try {
+          const submitFn = httpsCallable<any, any>(functions, 'submitGeneralIncidentBatch');
+          const fnRes = await submitFn({
+            clientCompanyId: payload.clientCompanyId,
+            developerCompanyId: payload.developerCompanyId,
+            projectId: payload.projectId,
+            title: payload.title,
+            dailyConsent: payload.dailyConsent,
+            items: processedItems,
+            idempotencyKey: payload.idempotencyKey || `idem-${reportId}`,
+          });
+          if (fnRes.data?.reportId) {
+            newReport.id = fnRes.data.reportId;
+          }
+        } catch (fnErr: any) {
+          console.warn('[Cloud Functions] Fallback a Firestore directo o error de cuota:', fnErr);
+          if (fnErr.code === 'functions/resource-exhausted') {
+            throw new Error(fnErr.message || 'Cuota diaria de envío general alcanzada.');
+          }
+          // Direct fallback only if emulator or development without functions deploy
+          if (db) {
+            await setDoc(doc(db, 'incidentReports', reportId), {
+              ...newReport,
+              serverTimestamp: serverTimestamp(),
+            });
+            for (const item of processedItems) {
+              await setDoc(doc(db, 'incidentItems', item.id), {
+                ...item,
+                serverTimestamp: serverTimestamp(),
+              });
+            }
+          }
+        }
+      } else if (db) {
+        // Critical incident or direct firestore persistence
+        try {
+          await setDoc(doc(db, 'incidentReports', reportId), {
+            ...newReport,
             serverTimestamp: serverTimestamp(),
           });
+          for (const item of processedItems) {
+            await setDoc(doc(db, 'incidentItems', item.id), {
+              ...item,
+              serverTimestamp: serverTimestamp(),
+            });
+          }
+        } catch (e) {
+          console.warn('[Firestore] Error al persistir reporte en Firestore:', e);
         }
-      } catch (e) {
-        console.warn('[Firestore] Error al persistir reporte en Firestore:', e);
       }
     }
 
