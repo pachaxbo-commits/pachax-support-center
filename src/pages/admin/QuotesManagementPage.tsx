@@ -41,8 +41,12 @@ export const QuotesManagementPage: React.FC = () => {
   const handleCreateQuote = (e: React.FormEvent) => {
     e.preventDefault();
     const subtotal = hours * hourlyRate;
+    const currentYear = new Date().getFullYear();
+    const sequenceNumber = String(quotes.length + 1).padStart(3, '0');
+    const quoteCode = `COT-${currentYear}-${sequenceNumber}`;
+
     const newQuote: Quote = {
-      id: `quote-${Date.now().toString(36)}`,
+      id: quoteCode,
       clientCompanyId: clientId,
       developerCompanyId: 'dev-pachax-core',
       projectId: projectId,

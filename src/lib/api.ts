@@ -4,7 +4,7 @@ import {
   IncidentStatus,
   IncidentCategory,
 } from '@/models/incident';
-import { FeatureRequestItem, FeatureRequestStatus } from '@/models/featureRequest';
+import { FeatureRequestItem } from '@/models/featureRequest';
 import { Quote } from '@/models/quote';
 import { AiRepairRun, AiRepairMode } from '@/models/aiRepair';
 import { ClientCompany } from '@/models/company';
@@ -26,12 +26,13 @@ import {
   getDocs,
   getDoc,
   doc,
-  addDoc,
+  setDoc,
   updateDoc,
   serverTimestamp,
 } from 'firebase/firestore';
+import { storageService } from '@/services/storageService';
 
-// In-Memory state for interactive sessions
+// In-Memory state for instant interactive reactivity & preview sessions
 let incidentReportsState: IncidentReport[] = [...INITIAL_INCIDENT_REPORTS];
 let incidentItemsState: IncidentItem[] = [...INITIAL_INCIDENT_ITEMS];
 let featureRequestsState: FeatureRequestItem[] = [...INITIAL_FEATURE_REQUESTS];
@@ -43,10 +44,37 @@ let projectsState: Project[] = [...DEMO_PROJECTS];
 export const api = {
   // --- CLIENTS & PROJECTS ---
   async getClients(): Promise<ClientCompany[]> {
+    if (isFirebaseConfigured() && db) {
+      try {
+        const snap = await getDocs(collection(db, 'clientCompanies'));
+        if (!snap.empty) {
+          const list = snap.docs.map((d) => d.data() as ClientCompany);
+          clientsState = list;
+          return list;
+        }
+      } catch (e) {
+        console.warn('[Firestore] Error leyendo clientCompanies, usando datos base:', e);
+      }
+    }
     return clientsState;
   },
 
   async getProjects(clientId?: string): Promise<Project[]> {
+    if (isFirebaseConfigured() && db) {
+      try {
+        const q = clientId
+          ? query(collection(db, 'projects'), where('clientCompanyId', '==', clientId))
+          : collection(db, 'projects');
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          const list = snap.docs.map((d) => d.data() as Project);
+          projectsState = list;
+          return list;
+        }
+      } catch (e) {
+        console.warn('[Firestore] Error leyendo projects:', e);
+      }
+    }
     if (clientId) {
       return projectsState.filter((p) => p.clientCompanyId === clientId);
     }
@@ -55,6 +83,31 @@ export const api = {
 
   // --- INCIDENTS ---
   async getIncidentReports(filters?: { clientCompanyId?: string; category?: IncidentCategory }): Promise<IncidentReport[]> {
+    if (isFirebaseConfigured() && db) {
+      try {
+        let q = collection(db, 'incidentReports');
+        if (filters?.clientCompanyId && filters?.category) {
+          const complexQ = query(
+            q,
+            where('clientCompanyId', '==', filters.clientCompanyId),
+            where('category', '==', filters.category)
+          );
+          const snap = await getDocs(complexQ);
+          if (!snap.empty) {
+            return snap.docs.map((d) => d.data() as IncidentReport);
+          }
+        } else if (filters?.clientCompanyId) {
+          const clientQ = query(q, where('clientCompanyId', '==', filters.clientCompanyId));
+          const snap = await getDocs(clientQ);
+          if (!snap.empty) {
+            return snap.docs.map((d) => d.data() as IncidentReport);
+          }
+        }
+      } catch (e) {
+        console.warn('[Firestore] Fallback para incidentReports:', e);
+      }
+    }
+
     let result = [...incidentReportsState];
     if (filters?.clientCompanyId) {
       result = result.filter((r) => r.clientCompanyId === filters.clientCompanyId);
@@ -66,11 +119,40 @@ export const api = {
   },
 
   async getIncidentReportById(id: string): Promise<IncidentReport | null> {
+    if (isFirebaseConfigured() && db) {
+      try {
+        const docSnap = await getDoc(doc(db, 'incidentReports', id));
+        if (docSnap.exists()) {
+          return docSnap.data() as IncidentReport;
+        }
+      } catch (e) {
+        // Fallback
+      }
+    }
     const found = incidentReportsState.find((r) => r.id === id);
     return found || null;
   },
 
   async getIncidentItems(reportId?: string, clientCompanyId?: string): Promise<IncidentItem[]> {
+    if (isFirebaseConfigured() && db) {
+      try {
+        let q = collection(db, 'incidentItems');
+        if (reportId) {
+          const snap = await getDocs(query(q, where('reportId', '==', reportId)));
+          if (!snap.empty) {
+            return snap.docs.map((d) => d.data() as IncidentItem);
+          }
+        } else if (clientCompanyId) {
+          const snap = await getDocs(query(q, where('clientCompanyId', '==', clientCompanyId)));
+          if (!snap.empty) {
+            return snap.docs.map((d) => d.data() as IncidentItem);
+          }
+        }
+      } catch (e) {
+        console.warn('[Firestore] Fallback para incidentItems:', e);
+      }
+    }
+
     let result = [...incidentItemsState];
     if (reportId) {
       result = result.filter((item) => item.reportId === reportId);
@@ -82,6 +164,16 @@ export const api = {
   },
 
   async getIncidentItemById(id: string): Promise<IncidentItem | null> {
+    if (isFirebaseConfigured() && db) {
+      try {
+        const docSnap = await getDoc(doc(db, 'incidentItems', id));
+        if (docSnap.exists()) {
+          return docSnap.data() as IncidentItem;
+        }
+      } catch {
+        // Fallback
+      }
+    }
     return incidentItemsState.find((item) => item.id === id) || null;
   },
 
@@ -126,39 +218,76 @@ export const api = {
       updatedAt: now,
     };
 
-    const newItems: IncidentItem[] = payload.items.map((it, idx) => ({
-      id: `item-${reportId}-${idx + 1}`,
-      reportId: reportId,
-      clientCompanyId: payload.clientCompanyId,
-      developerCompanyId: payload.developerCompanyId,
-      projectId: payload.projectId,
-      title: it.title,
-      description: it.description,
-      moduleAffected: it.moduleAffected,
-      originalImageUrl: it.originalImageUrl,
-      annotatedImageUrl: it.annotatedImageUrl,
-      annotations: it.annotations,
-      evidenceFiles: it.evidenceFiles || [],
-      status: 'received',
-      priority: payload.category === 'critical' ? 'urgent' : it.priority,
-      aiFixEligible: true,
-      aiFixStatus: 'not_started',
-      createdAt: now,
-      updatedAt: now,
-    }));
+    // Process images and upload to Cloud Storage
+    const processedItems: IncidentItem[] = [];
+    for (let idx = 0; idx < payload.items.length; idx++) {
+      const it = payload.items[idx];
+      const itemId = `item-${reportId}-${idx + 1}`;
 
+      let finalOriginalUrl = it.originalImageUrl;
+      let finalAnnotatedUrl = it.annotatedImageUrl;
+
+      if (it.annotatedImageUrl && it.annotatedImageUrl.startsWith('data:')) {
+        try {
+          const uploadRes = await storageService.uploadIncidentImage({
+            developerCompanyId: payload.developerCompanyId,
+            clientCompanyId: payload.clientCompanyId,
+            projectId: payload.projectId,
+            reportId,
+            itemId,
+            type: 'annotated',
+            dataUrlOrBase64: it.annotatedImageUrl,
+          });
+          finalAnnotatedUrl = uploadRes.url;
+        } catch (e) {
+          console.warn('[Storage] Fallback guardando imagen en base64:', e);
+        }
+      }
+
+      const newItem: IncidentItem = {
+        id: itemId,
+        reportId: reportId,
+        clientCompanyId: payload.clientCompanyId,
+        developerCompanyId: payload.developerCompanyId,
+        projectId: payload.projectId,
+        title: it.title,
+        description: it.description,
+        moduleAffected: it.moduleAffected,
+        originalImageUrl: finalOriginalUrl,
+        annotatedImageUrl: finalAnnotatedUrl,
+        annotations: it.annotations,
+        evidenceFiles: it.evidenceFiles || [],
+        status: 'received',
+        priority: payload.category === 'critical' ? 'urgent' : it.priority,
+        aiFixEligible: true,
+        aiFixStatus: 'not_started',
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      processedItems.push(newItem);
+    }
+
+    // Update in-memory state
     incidentReportsState = [newReport, ...incidentReportsState];
-    incidentItemsState = [...newItems, ...incidentItemsState];
+    incidentItemsState = [...processedItems, ...incidentItemsState];
 
-    // Persist to Firestore if live connection
+    // Persist to live Firestore
     if (isFirebaseConfigured() && db) {
       try {
-        await addDoc(collection(db, 'incidentReports'), {
+        await setDoc(doc(db, 'incidentReports', reportId), {
           ...newReport,
-          createdAt: serverTimestamp(),
+          serverTimestamp: serverTimestamp(),
         });
+
+        for (const item of processedItems) {
+          await setDoc(doc(db, 'incidentItems', item.id), {
+            ...item,
+            serverTimestamp: serverTimestamp(),
+          });
+        }
       } catch (e) {
-        console.warn('[API] Could not sync report to live Firestore:', e);
+        console.warn('[Firestore] Error al persistir reporte en Firestore:', e);
       }
     }
 
@@ -169,10 +298,35 @@ export const api = {
     incidentItemsState = incidentItemsState.map((it) =>
       it.id === itemId ? { ...it, status, updatedAt: new Date().toISOString() } : it
     );
+
+    if (isFirebaseConfigured() && db) {
+      try {
+        await updateDoc(doc(db, 'incidentItems', itemId), {
+          status,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (e) {
+        console.warn('[Firestore] Error al actualizar estado de item:', e);
+      }
+    }
   },
 
   // --- FEATURE REQUESTS ---
   async getFeatureRequests(clientCompanyId?: string): Promise<FeatureRequestItem[]> {
+    if (isFirebaseConfigured() && db) {
+      try {
+        const q = clientCompanyId
+          ? query(collection(db, 'featureRequests'), where('clientCompanyId', '==', clientCompanyId))
+          : collection(db, 'featureRequests');
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          return snap.docs.map((d) => d.data() as FeatureRequestItem);
+        }
+      } catch (e) {
+        console.warn('[Firestore] Fallback para featureRequests:', e);
+      }
+    }
+
     let result = [...featureRequestsState];
     if (clientCompanyId) {
       result = result.filter((r) => r.clientCompanyId === clientCompanyId);
@@ -218,11 +372,37 @@ export const api = {
     };
 
     featureRequestsState = [newItem, ...featureRequestsState];
+
+    if (isFirebaseConfigured() && db) {
+      try {
+        await setDoc(doc(db, 'featureRequests', id), {
+          ...newItem,
+          serverTimestamp: serverTimestamp(),
+        });
+      } catch (e) {
+        console.warn('[Firestore] Error al persistir solicitud en Firestore:', e);
+      }
+    }
+
     return newItem;
   },
 
   // --- QUOTES ---
   async getQuotes(clientCompanyId?: string): Promise<Quote[]> {
+    if (isFirebaseConfigured() && db) {
+      try {
+        const q = clientCompanyId
+          ? query(collection(db, 'quotes'), where('clientCompanyId', '==', clientCompanyId))
+          : collection(db, 'quotes');
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          return snap.docs.map((d) => d.data() as Quote);
+        }
+      } catch (e) {
+        console.warn('[Firestore] Fallback para quotes:', e);
+      }
+    }
+
     let result = [...quotesState];
     if (clientCompanyId) {
       result = result.filter((q) => q.clientCompanyId === clientCompanyId);
@@ -231,20 +411,35 @@ export const api = {
   },
 
   async approveQuote(quoteId: string, approver: { uid: string; displayName: string; email: string }): Promise<void> {
+    const now = new Date().toISOString();
     quotesState = quotesState.map((q) =>
       q.id === quoteId
         ? {
             ...q,
             status: 'approved',
             approvedBy: approver,
-            approvedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
+            approvedAt: now,
+            updatedAt: now,
           }
         : q
     );
+
+    if (isFirebaseConfigured() && db) {
+      try {
+        await updateDoc(doc(db, 'quotes', quoteId), {
+          status: 'approved',
+          approvedBy: approver,
+          approvedAt: now,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (e) {
+        console.warn('[Firestore] Error actualizando cotización aprobada:', e);
+      }
+    }
   },
 
   async rejectQuote(quoteId: string, reason: string, user: { uid: string; displayName: string }): Promise<void> {
+    const now = new Date().toISOString();
     quotesState = quotesState.map((q) =>
       q.id === quoteId
         ? {
@@ -252,11 +447,25 @@ export const api = {
             status: 'rejected',
             rejectedBy: user,
             rejectionReason: reason,
-            rejectedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
+            rejectedAt: now,
+            updatedAt: now,
           }
         : q
     );
+
+    if (isFirebaseConfigured() && db) {
+      try {
+        await updateDoc(doc(db, 'quotes', quoteId), {
+          status: 'rejected',
+          rejectedBy: user,
+          rejectionReason: reason,
+          rejectedAt: now,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (e) {
+        console.warn('[Firestore] Error actualizando cotización rechazada:', e);
+      }
+    }
   },
 
   // --- AI REPAIRS ---

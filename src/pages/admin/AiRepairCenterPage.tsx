@@ -124,6 +124,14 @@ export const AiRepairCenterPage: React.FC = () => {
         </div>
       </div>
 
+      {/* Safety Notice: Controlled Phase */}
+      <div className="p-4 bg-purple-50/80 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800/80 rounded-xl flex items-start gap-3">
+        <Shield className="w-5 h-5 text-purple-600 dark:text-purple-400 shrink-0 mt-0.5" />
+        <div className="text-xs text-purple-900 dark:text-purple-200 leading-relaxed">
+          <strong>Seguridad Operativa — Fase de Integración Controlada:</strong> Los despliegues automáticos directos a producción sin supervisión humana permanecen <strong>inhabilitados</strong>. Todos los trabajos orquestados por el agente preparan un diagnóstico técnico, generan la rama de trabajo y abren un Pull Request en GitHub para revisión y aprobación previa del equipo técnico de PACHAX.
+        </div>
+      </div>
+
       {/* 3 Modes Overview Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div

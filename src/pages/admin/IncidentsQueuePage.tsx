@@ -232,6 +232,32 @@ export const IncidentsQueuePage: React.FC = () => {
             </div>
 
             <div className="space-y-3 text-xs sm:text-sm">
+              <div className="grid grid-cols-2 gap-3 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl">
+                <div>
+                  <span className="font-semibold text-slate-400 block mb-1">Módulo Afectado:</span>
+                  <span className="font-bold text-slate-900 dark:text-white">{selectedItem.moduleAffected}</span>
+                </div>
+                <div>
+                  <span className="font-semibold text-slate-400 block mb-1">Ingeniero Asignado:</span>
+                  <select
+                    value={selectedItem.assignedTo?.email || 'unassigned'}
+                    onChange={(e) => {
+                      const newAssignee = e.target.value === 'unassigned' ? undefined : {
+                        uid: 'dev-1',
+                        displayName: e.target.value.split('@')[0],
+                        email: e.target.value,
+                      };
+                      setSelectedItem({ ...selectedItem, assignedTo: newAssignee });
+                    }}
+                    className="w-full text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-1.5 outline-none"
+                  >
+                    <option value="unassigned">Sin asignar</option>
+                    <option value="dev@pachax.bo">dev@pachax.bo (Ing. Lead Soporte)</option>
+                    <option value="carlos@pachax.bo">carlos@pachax.bo (Ingeniero Backend)</option>
+                  </select>
+                </div>
+              </div>
+
               <div>
                 <span className="font-semibold text-slate-400 block mb-1">Descripción:</span>
                 <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl whitespace-pre-wrap">
@@ -253,6 +279,26 @@ export const IncidentsQueuePage: React.FC = () => {
                   </div>
                 </div>
               )}
+
+              {/* Solicitar info adicional */}
+              <div>
+                <span className="font-semibold text-slate-400 block mb-1">
+                  Solicitar Información Adicional al Cliente / Comentario:
+                </span>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Ej. ¿En qué navegador o modelo de celular ocurrió? / Parche desplegado en staging."
+                    className="flex-1 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 outline-none"
+                  />
+                  <button
+                    onClick={() => alert('Mensaje enviado al cliente y registrado en el historial de la incidencia.')}
+                    className="px-3 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shrink-0"
+                  >
+                    Enviar Mensaje
+                  </button>
+                </div>
+              </div>
             </div>
 
             <div className="flex justify-between items-center pt-3 border-t border-slate-100 dark:border-slate-800">
