@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "test": "vitest run",
-    "test:emulator": "firebase emulators:exec --only firestore \"vitest run src/test/emulator\"",
+    "test:emulator": "firebase emulators:exec --only firestore,storage \"vitest run src/test/emulator\"",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },

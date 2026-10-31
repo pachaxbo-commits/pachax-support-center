@@ -1,6 +1,7 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import * as crypto from "crypto";
+import { dispatchCriticalIncidentAlert } from "./notifications";
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -802,9 +803,31 @@ export const submitCriticalIncident = onCall(async (request) => {
     });
   });
 
+  // Dispatch external notifications (Telegram / Email) if configured, or record internally
+  const notificationResult = await dispatchCriticalIncidentAlert(db, {
+    reportId,
+    projectId,
+    projectName: projectData.name || "Proyecto",
+    clientCompanyId,
+    developerCompanyId: effectiveDevCompanyId,
+    reportedByEmail: callerData.email,
+    title,
+    criticalJustification,
+    emergencyPhone,
+    createdAt: new Date().toISOString(),
+  });
+
+  const notificationMessage =
+    notificationResult.status === "delivered"
+      ? "Incidencia crítica registrada con éxito. Notificaciones enviadas por Telegram y Correo al equipo de guardia."
+      : notificationResult.status === "partial"
+      ? "Incidencia crítica registrada con éxito. Notificación parcial enviada al equipo de guardia."
+      : "Incidencia crítica registrada con éxito. Notificación archivada internamente en cola operativa (credenciales de mensajería externa no configuradas).";
+
   return {
     success: true,
     reportId,
-    message: "Incidencia crítica registrada con éxito. El equipo de soporte 24/7 ha sido notificado.",
+    notificationStatus: notificationResult.status,
+    message: notificationMessage,
   };
 });
