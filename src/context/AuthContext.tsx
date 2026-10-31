@@ -12,6 +12,7 @@ import {
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
   sendPasswordResetEmail,
+  sendEmailVerification,
   User as FirebaseUser,
 } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
@@ -30,6 +31,8 @@ interface AuthContextType {
   login: (email: string, pass: string) => Promise<void>;
   logout: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
+  sendVerificationEmail: () => Promise<void>;
+  reloadUser: () => Promise<void>;
   switchDemoRole: (role: UserRole) => void;
   hasPermission: (key: keyof UserPermissions) => boolean;
 }
@@ -138,6 +141,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const sendVerificationEmail = async () => {
+    if (isFirebaseConfigured() && auth && auth.currentUser) {
+      await sendEmailVerification(auth.currentUser, {
+        url: `${window.location.origin}/login`,
+        handleCodeInApp: false,
+      });
+    } else {
+      throw new Error('No hay una sesión activa en Firebase para enviar la verificación.');
+    }
+  };
+
+  const reloadUser = async () => {
+    if (isFirebaseConfigured() && auth && auth.currentUser) {
+      await auth.currentUser.reload();
+      setFirebaseUser(auth.currentUser);
+    }
+  };
+
   const switchDemoRole = (newRole: UserRole) => {
     const demoProfile = DEMO_USERS[newRole] || {
       uid: `demo-${newRole}`,
@@ -167,6 +188,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         login,
         logout,
         resetPassword,
+        sendVerificationEmail,
+        reloadUser,
         switchDemoRole,
         hasPermission,
       }}

@@ -37,14 +37,9 @@ async function checkStatus() {
   console.log(`Custom Claims:    ${JSON.stringify(user.customClaims || {})}`);
   
   if (!user.emailVerified) {
-    const link = await admin.auth().generateEmailVerificationLink(user.email, {
-      url: 'https://pachax-support-center.vercel.app/login',
-      handleCodeInApp: false,
-    });
-    console.log('\n----------------------------------------------------------------');
-    console.log(' ENLACE OFICIAL DE VERIFICACIÓN (Haga clic para verificar):');
-    console.log(link);
-    console.log('----------------------------------------------------------------\n');
+    console.log('\n[AVISO] El correo de la cuenta aún NO ha sido verificado (emailVerified: false).');
+    console.log('Por seguridad, el enlace y código oobCode no se imprimen en logs ni en consola.');
+    console.log('Siga el procedimiento oficial desde la consola de Firebase o desde la aplicación para enviar el correo.');
   } else {
     console.log('\n✓ La cuenta ya ha sido verificada formalmente.');
     console.log('Listo para proceder con la promoción cuando el propietario lo autorice.\n');
