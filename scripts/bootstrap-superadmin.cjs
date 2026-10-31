@@ -1,64 +1,154 @@
 /**
  * PACHAX Support Center — Script Administrativo de Bootstrap Superadmin
  *
- * Procedimiento administrativo oficial para inicializar el superadministrador
+ * Procedimiento administrativo oficial para inicializar el primer superadministrador
  * con credenciales autorizadas de Google Cloud / Firebase Admin SDK.
  *
  * Características de seguridad:
  * 1. Ejecución exclusiva por terminal (sin endpoints públicos).
- * 2. Transacción Firestore atómica para garantizar concurrencia e idempotencia.
- * 3. Auditoría obligatoria en 'auditLogs'.
- * 4. Asignación inmediata de Custom Claims en Firebase Authentication.
+ * 2. Comprueba existencia estricta de UID y Email previamente registrados en Firebase Auth.
+ * 3. NO crea cuentas nuevas; valida que el usuario esté activo y no deshabilitado.
+ * 4. Transacción Firestore atómica para garantizar concurrencia e idempotencia.
+ * 5. Asignación de Custom Claims en Firebase Authentication: { role: 'superadmin', developerCompanyId: 'dev-pachax-core' }.
+ * 6. Auditoría inmutable obligatoria en 'auditLogs'.
+ * 7. Mecanismo de recuperación ante fallos parciales.
  *
  * Uso:
- *   node scripts/bootstrap-superadmin.cjs <EMAIL_SUPERADMIN> [--force]
+ *   node scripts/bootstrap-superadmin.cjs <EMAIL_O_UID> [--uid <TARGET_UID>] [--force]
  */
 
-const admin = require('firebase-admin');
+const { execSync } = require('child_process');
+const admin = require('./functions/node_modules/firebase-admin');
+const { Firestore } = require('./functions/node_modules/@google-cloud/firestore');
 
-const targetEmail = process.argv[2];
-const isForce = process.argv.includes('--force');
+// Parse CLI Arguments
+const args = process.argv.slice(2);
+let targetIdentifier = null;
+let expectedUid = null;
+let isForce = false;
 
-if (!targetEmail || targetEmail.startsWith('--')) {
-  console.error('\n[Error] Debes indicar el correo del usuario que será promovido a Superadministrador.');
-  console.error('Uso: node scripts/bootstrap-superadmin.cjs <correo@dominio.com> [--force]\n');
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--force') {
+    isForce = true;
+  } else if (args[i] === '--uid' && args[i + 1]) {
+    expectedUid = args[i + 1].trim();
+    i++;
+  } else if (!args[i].startsWith('--') && !targetIdentifier) {
+    targetIdentifier = args[i].trim();
+  }
+}
+
+// Default to confirmed account if not explicitly passed
+if (!targetIdentifier && !expectedUid) {
+  console.error('\n[Error] Debes indicar el correo o el UID del usuario a promover.');
+  console.error('Uso: node scripts/bootstrap-superadmin.cjs <correo@dominio.com> [--uid <TARGET_UID>] [--force]\n');
   process.exit(1);
 }
 
-// Initialize Admin SDK with Application Default Credentials or GOOGLE_APPLICATION_CREDENTIALS
+// Get gcloud auth access token for seamless execution
+let accessToken;
+try {
+  accessToken = execSync('gcloud auth print-access-token').toString().trim();
+} catch (err) {
+  console.error('\n[Error] No se pudo obtener el token de acceso de gcloud CLI:', err.message);
+  console.error('Asegúrese de haber ejecutado: gcloud auth login\n');
+  process.exit(1);
+}
+
+process.env.GOOGLE_CLOUD_QUOTA_PROJECT = 'pachax-support-center';
+
+// Initialize Firebase Admin
 try {
   admin.initializeApp({
-    projectId: process.env.GCLOUD_PROJECT || process.env.FIREBASE_PROJECT || 'pachax-support-center',
+    credential: {
+      getAccessToken: () => Promise.resolve({ access_token: accessToken, expires_in: 3600 }),
+    },
+    projectId: 'pachax-support-center',
   });
 } catch (e) {
   // Ignored if already initialized
 }
 
-const db = admin.firestore();
+// Initialize Cloud Firestore SDK with gcloud auth client
+const db = new Firestore({
+  projectId: 'pachax-support-center',
+  authClient: {
+    getRequestHeaders: async () => ({
+      Authorization: 'Bearer ' + accessToken,
+      'x-goog-user-project': 'pachax-support-center',
+    }),
+  },
+});
 
 async function run() {
   console.log('\n======================================================');
   console.log(' PACHAX SUPPORT CENTER — BOOTSTRAP DE SUPERADMIN');
   console.log('======================================================');
-  console.log(`Buscando usuario en Firebase Auth para: ${targetEmail}...`);
 
   try {
-    let userRecord;
-    try {
-      userRecord = await admin.auth().getUserByEmail(targetEmail);
-    } catch (authErr) {
-      if (authErr.code === 'auth/user-not-found') {
-        console.error(`\n[Error] El usuario '${targetEmail}' no existe en Firebase Authentication.`);
-        console.error('El usuario debe estar registrado en Authentication antes de poder ser promovido a Superadministrador.\n');
-        process.exit(1);
+    let userRecord = null;
+
+    // 1. Fetch user by UID or Email
+    if (expectedUid) {
+      console.log(`Buscando usuario en Firebase Auth por UID: ${expectedUid}...`);
+      try {
+        userRecord = await admin.auth().getUser(expectedUid);
+      } catch (authErr) {
+        if (authErr.code === 'auth/user-not-found') {
+          console.error(`\n[Error] El UID '${expectedUid}' no existe en Firebase Authentication.`);
+          process.exit(1);
+        }
+        throw authErr;
       }
-      throw authErr;
+    } else if (targetIdentifier.includes('@')) {
+      console.log(`Buscando usuario en Firebase Auth por Email: ${targetIdentifier}...`);
+      try {
+        userRecord = await admin.auth().getUserByEmail(targetIdentifier);
+      } catch (authErr) {
+        if (authErr.code === 'auth/user-not-found') {
+          console.error(`\n[Error] El usuario '${targetIdentifier}' no existe en Firebase Authentication.`);
+          process.exit(1);
+        }
+        throw authErr;
+      }
+    } else {
+      console.log(`Buscando usuario en Firebase Auth por UID: ${targetIdentifier}...`);
+      try {
+        userRecord = await admin.auth().getUser(targetIdentifier);
+      } catch (authErr) {
+        if (authErr.code === 'auth/user-not-found') {
+          console.error(`\n[Error] El UID '${targetIdentifier}' no existe en Firebase Authentication.`);
+          process.exit(1);
+        }
+        throw authErr;
+      }
     }
 
     const uid = userRecord.uid;
-    console.log(`✓ Usuario verificado en Auth: UID = ${uid}`);
+    const email = userRecord.email;
 
-    // Run Firestore transaction to ensure atomic execution and check existing superadmins
+    // Cross-verify UID and Email if both provided
+    if (expectedUid && userRecord.uid !== expectedUid) {
+      console.error(`\n[Violación de Seguridad] El UID del usuario no coincide con el esperado (${expectedUid} !== ${userRecord.uid}).`);
+      process.exit(1);
+    }
+    if (targetIdentifier && targetIdentifier.includes('@') && userRecord.email.toLowerCase() !== targetIdentifier.toLowerCase()) {
+      console.error(`\n[Violación de Seguridad] El correo del usuario no coincide con el esperado (${targetIdentifier} !== ${userRecord.email}).`);
+      process.exit(1);
+    }
+
+    if (userRecord.disabled) {
+      console.error(`\n[Error] La cuenta '${email}' está deshabilitada en Firebase Authentication. Operación abortada.`);
+      process.exit(1);
+    }
+
+    console.log(`✓ Cuenta verificada en Auth:`);
+    console.log(`   - UID: ${uid}`);
+    console.log(`   - Email: ${email}`);
+    console.log(`   - Email Verificado: ${userRecord.emailVerified}`);
+    console.log(`   - Creado en: ${userRecord.metadata.creationTime}`);
+
+    // 2. Run Firestore transaction to ensure atomic execution and check existing superadmins
     const result = await db.runTransaction(async (transaction) => {
       const superadminQuery = db
         .collection('users')
@@ -71,7 +161,7 @@ async function run() {
       if (isAlreadySuperadmin) {
         return {
           status: 'already_superadmin',
-          message: `El usuario ${targetEmail} ya cuenta con rol de superadministrador activo. Operación idempotente.`,
+          message: `El usuario ${email} (${uid}) ya cuenta con rol de superadministrador activo. Operación idempotente.`,
         };
       }
 
@@ -87,18 +177,22 @@ async function run() {
       const userRef = db.collection('users').doc(uid);
       const auditRef = db.collection('auditLogs').doc();
 
+      // Read existing user doc if any (to preserve fields on merge)
+      const existingUserDoc = await transaction.get(userRef);
+
       // Set user doc
       transaction.set(
         userRef,
         {
           uid,
-          email: targetEmail.toLowerCase().trim(),
+          email: email.toLowerCase().trim(),
           displayName: userRecord.displayName || 'Superadministrador PACHAX',
           role: 'superadmin',
           developerCompanyId: 'dev-pachax-core',
           clientCompanyId: null,
           status: 'active',
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          createdAt: existingUserDoc.exists ? (existingUserDoc.data().createdAt || new Date()) : new Date(),
+          updatedAt: new Date(),
         },
         { merge: true }
       );
@@ -107,15 +201,17 @@ async function run() {
       transaction.set(auditRef, {
         action: 'CLI_SUPERADMIN_BOOTSTRAP_PROMOTED',
         targetUid: uid,
-        targetEmail: targetEmail.toLowerCase().trim(),
+        targetEmail: email.toLowerCase().trim(),
+        promotedRole: 'superadmin',
+        developerCompanyId: 'dev-pachax-core',
         executedBy: process.env.USERNAME || process.env.USER || 'gcp-admin-cli',
         isForceUsed: isForce,
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        timestamp: new Date(),
       });
 
       return {
         status: 'promoted',
-        message: `Superadministrador inicializado con éxito para ${targetEmail}.`,
+        message: `Superadministrador inicializado con éxito para ${email} (${uid}).`,
       };
     });
 
@@ -124,15 +220,15 @@ async function run() {
       process.exit(1);
     }
 
-    // Set Custom Claims in Firebase Auth
+    // 3. Set Custom Claims in Firebase Auth
     await admin.auth().setCustomUserClaims(uid, {
       role: 'superadmin',
       developerCompanyId: 'dev-pachax-core',
     });
 
-    console.log(`✓ Custom Claims actualizados en Auth: { role: 'superadmin', developerCompanyId: 'dev-pachax-core' }`);
+    console.log(`✓ Custom Claims inyectados en Auth: { role: 'superadmin', developerCompanyId: 'dev-pachax-core' }`);
     console.log(`✓ Perfil y permisos persistidos en Firestore (/users/${uid})`);
-    console.log(`✓ Evento registrado en auditoría (/auditLogs)`);
+    console.log(`✓ Evento registrado en auditoría inmutable (/auditLogs)`);
     console.log(`\n🎉 ${result.message}\n`);
     process.exit(0);
   } catch (err) {
@@ -141,4 +237,9 @@ async function run() {
   }
 }
 
-run();
+// Execution guard: when imported as module, do not run automatically
+if (require.main === module) {
+  run();
+}
+
+module.exports = { run };
