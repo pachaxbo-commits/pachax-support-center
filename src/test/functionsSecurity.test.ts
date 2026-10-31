@@ -147,7 +147,9 @@ describe('Cloud Functions Security & Business Logic Hardening', () => {
       expect(testHash).toBe(tokenHash);
 
       // Tampered token must fail
-      const tamperedToken = rawToken.slice(0, -1) + 'a';
+      const lastChar = rawToken.slice(-1);
+      const replacementChar = lastChar === 'a' ? 'b' : 'a';
+      const tamperedToken = rawToken.slice(0, -1) + replacementChar;
       const tamperedHash = crypto.createHash('sha256').update(tamperedToken).digest('hex');
       expect(tamperedHash).not.toBe(tokenHash);
     });
