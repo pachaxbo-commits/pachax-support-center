@@ -323,11 +323,78 @@ export const api = {
             }
           }
         }
+      } else if (payload.category === 'critical' && functions) {
+        // Enforce rate limiting & validation via Cloud Function
+        try {
+          const submitCritFn = httpsCallable<any, any>(functions, 'submitCriticalIncident');
+          const it = processedItems[0] || { description: '', moduleAffected: 'General' };
+          const fnRes = await submitCritFn({
+            clientCompanyId: payload.clientCompanyId,
+            developerCompanyId: payload.developerCompanyId,
+            projectId: payload.projectId,
+            title: payload.title,
+            description: it.description,
+            moduleAffected: it.moduleAffected,
+            criticalJustification: payload.criticalJustification,
+            originalImageUrl: it.originalImageUrl,
+            annotatedImageUrl: it.annotatedImageUrl,
+            annotations: it.annotations,
+            evidenceFiles: it.evidenceFiles,
+            idempotencyKey: payload.idempotencyKey || `idem-${reportId}`,
+          });
+          if (fnRes.data?.reportId) {
+            newReport.id = fnRes.data.reportId;
+          }
+        } catch (fnErr: any) {
+          console.warn('[Cloud Functions] Error en submitCriticalIncident:', fnErr);
+          if (fnErr.code === 'functions/resource-exhausted') {
+            throw new Error(fnErr.message || 'Límite de incidencias críticas por hora alcanzado.');
+          }
+          // Direct fallback only if emulator or development without functions deploy
+          if (db) {
+            await setDoc(doc(db, 'incidentReports', reportId), {
+              id: newReport.id,
+              clientCompanyId: newReport.clientCompanyId,
+              developerCompanyId: newReport.developerCompanyId,
+              projectId: newReport.projectId,
+              projectName: newReport.projectName,
+              reportedBy: newReport.reportedBy.uid,
+              reportedByEmail: newReport.reportedBy.email,
+              category: newReport.category,
+              title: newReport.title,
+              itemsCount: newReport.itemsCount,
+              status: 'received',
+              criticalJustification: newReport.criticalJustification,
+              createdAt: newReport.createdAt,
+              updatedAt: newReport.updatedAt,
+              serverTimestamp: serverTimestamp(),
+            });
+            for (const item of processedItems) {
+              await setDoc(doc(db, 'incidentItems', item.id), {
+                ...item,
+                serverTimestamp: serverTimestamp(),
+              });
+            }
+          }
+        }
       } else if (db) {
-        // Critical incident or direct firestore persistence
+        // Direct firestore persistence
         try {
           await setDoc(doc(db, 'incidentReports', reportId), {
-            ...newReport,
+            id: newReport.id,
+            clientCompanyId: newReport.clientCompanyId,
+            developerCompanyId: newReport.developerCompanyId,
+            projectId: newReport.projectId,
+            projectName: newReport.projectName,
+            reportedBy: newReport.reportedBy.uid,
+            reportedByEmail: newReport.reportedBy.email,
+            category: newReport.category,
+            title: newReport.title,
+            itemsCount: newReport.itemsCount,
+            status: 'received',
+            criticalJustification: newReport.criticalJustification,
+            createdAt: newReport.createdAt,
+            updatedAt: newReport.updatedAt,
             serverTimestamp: serverTimestamp(),
           });
           for (const item of processedItems) {

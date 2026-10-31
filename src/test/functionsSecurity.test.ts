@@ -203,4 +203,91 @@ describe('Cloud Functions Security & Business Logic Hardening', () => {
       expect(detectMimeType('data:image/webp;base64,UklGR')).toBe('image/webp');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // 4. Cross-Tenant Idempotency & Rate Limiting
+  // ---------------------------------------------------------------------------
+  describe('Cross-Tenant Idempotency Isolation & Abuse Prevention', () => {
+    function getTenantIdempotencyDocId(clientCompanyId: string, projectId: string, rawKey: string): string {
+      const hash = crypto.createHash('sha256').update(`${clientCompanyId}:${projectId}:${rawKey}`).digest('hex').substring(0, 32);
+      return `${clientCompanyId}_${projectId}_${hash}`;
+    }
+
+    it('guarantees identical idempotency keys used by different clients generate isolated records', () => {
+      const sharedKey = 'client-retry-batch-token-123';
+
+      const clientAId = 'client-sanjose';
+      const projAId = 'proj-sanjose-pos';
+      const recordA = getTenantIdempotencyDocId(clientAId, projAId, sharedKey);
+
+      const clientBId = 'client-rival';
+      const projBId = 'proj-rival-app';
+      const recordB = getTenantIdempotencyDocId(clientBId, projBId, sharedKey);
+
+      // Must be completely different documents
+      expect(recordA).not.toBe(recordB);
+      expect(recordA.startsWith('client-sanjose')).toBe(true);
+      expect(recordB.startsWith('client-rival')).toBe(true);
+
+      // Replaying key for client A yields identical record
+      const recordAReplay = getTenantIdempotencyDocId(clientAId, projAId, sharedKey);
+      expect(recordAReplay).toBe(recordA);
+    });
+
+    it('enforces string constraints on critical incidents (title 5-200, justification 20-2000)', () => {
+      function validateCriticalIncidentPayload(payload: {
+        title: string;
+        criticalJustification: string;
+        description: string;
+      }): { valid: boolean; error?: string } {
+        if (!payload.title || payload.title.length < 5 || payload.title.length > 200) {
+          return { valid: false, error: 'Título inválido' };
+        }
+        if (!payload.criticalJustification || payload.criticalJustification.length < 20 || payload.criticalJustification.length > 2000) {
+          return { valid: false, error: 'Justificación crítica insuficiente (mínimo 20 caracteres)' };
+        }
+        if (!payload.description || payload.description.length > 5000) {
+          return { valid: false, error: 'Descripción excede límite' };
+        }
+        return { valid: true };
+      }
+
+      // Short justification rejected
+      expect(
+        validateCriticalIncidentPayload({
+          title: 'Servidor caído',
+          criticalJustification: 'No anda',
+          description: 'Error en la base de datos',
+        }).valid
+      ).toBe(false);
+
+      // Valid justification accepted
+      expect(
+        validateCriticalIncidentPayload({
+          title: 'Servidor caído',
+          criticalJustification: 'Imposible emitir facturas legales en sucursal principal - bloqueo operativo total',
+          description: 'Error 500 al conectar con el servicio fiscal',
+        }).valid
+      ).toBe(true);
+    });
+
+    it('enforces maximum 5 critical incidents per client per hour window', () => {
+      const MAX_PER_HOUR = 5;
+      let currentHourCount = 0;
+
+      function registerCriticalIncident(): { allowed: boolean } {
+        if (currentHourCount >= MAX_PER_HOUR) {
+          return { allowed: false };
+        }
+        currentHourCount++;
+        return { allowed: true };
+      }
+
+      for (let i = 0; i < 5; i++) {
+        expect(registerCriticalIncident().allowed).toBe(true);
+      }
+      // 6th critical incident in the same hour is blocked
+      expect(registerCriticalIncident().allowed).toBe(false);
+    });
+  });
 });

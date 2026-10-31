@@ -86,26 +86,22 @@ service cloud.firestore {
     // 1. USERS COLLECTION
     // =========================================================================
     match /users/{userId} {
-      // Read: own profile, developer admin/staff for their tenant, or client admin for same client
       allow read: if isAuthenticated() &&
         (request.auth.uid == userId ||
          isSuperAdmin() ||
          (resource.data.developerCompanyId != null && isDevStaff(resource.data.developerCompanyId)) ||
          (resource.data.clientCompanyId != null && isClientAdmin(resource.data.clientCompanyId)));
 
-      // User self-update: strictly limited to non-administrative profile fields
       allow update: if isAuthenticated() &&
         ((request.auth.uid == userId &&
           !request.resource.data.diff(resource.data).affectedKeys().hasAny([
             'role', 'developerCompanyId', 'clientCompanyId', 'status', 'permissions', 'email', 'customClaims'
           ])) ||
-         // Dev Admin can update users in their developer tenant (cannot promote to superadmin)
          (isDevAdmin(resource.data.developerCompanyId) &&
           request.resource.data.developerCompanyId == resource.data.developerCompanyId &&
           request.resource.data.role != 'superadmin') ||
          isSuperAdmin());
 
-      // User creation: only through SuperAdmin or trusted Cloud Functions (no self-registration)
       allow create: if isSuperAdmin();
       allow delete: if isSuperAdmin();
     }
@@ -167,7 +163,6 @@ service cloud.firestore {
       allow read: if isAuthenticated() &&
         (isDevStaff(resource.data.developerCompanyId) || isClientUser(resource.data.clientCompanyId));
 
-      // Strictly restrict creation to dev admins or superadmin with valid tenant binding
       allow create: if isAuthenticated() &&
         (isSuperAdmin() ||
          (isDevAdmin(request.resource.data.developerCompanyId) &&
@@ -189,23 +184,30 @@ service cloud.firestore {
       allow read: if isAuthenticated() &&
         (isClientUser(resource.data.clientCompanyId) || isDevStaff(resource.data.developerCompanyId));
 
-      // Client creation: ONLY for critical incidents 24/7 with verified tenancy and justification
-      // General incident batches MUST be created atomically via the Cloud Function 'submitGeneralIncidentBatch'
+      // Client direct creation: EXCLUSIVELY for validated critical incidents (24/7 SLA)
+      // Disallows administrative field injection and enforces string size constraints
       allow create: if isAuthenticated() &&
         isClientUser(request.resource.data.clientCompanyId) &&
         request.resource.data.reportedBy == request.auth.uid &&
-        request.resource.data.keys().hasAll([
-          'clientCompanyId', 'developerCompanyId', 'projectId', 'createdAt', 'category', 'status'
+        request.resource.data.keys().hasOnly([
+          'id', 'clientCompanyId', 'developerCompanyId', 'projectId', 'projectName',
+          'reportedBy', 'reportedByEmail', 'category', 'title', 'itemsCount', 'status',
+          'criticalJustification', 'emergencyPhone', 'dailySubmissionConsentConfirmed',
+          'idempotencyKey', 'operationalDay', 'createdAt', 'updatedAt', 'serverTimestamp'
         ]) &&
         request.resource.data.status == 'received' &&
+        request.resource.data.title is string &&
+        request.resource.data.title.size() >= 5 &&
+        request.resource.data.title.size() <= 200 &&
+        request.resource.data.category == 'critical' &&
+        request.resource.data.criticalJustification is string &&
+        request.resource.data.criticalJustification.size() >= 20 &&
+        request.resource.data.criticalJustification.size() <= 2000 &&
         exists(/databases/$(database)/documents/projects/$(request.resource.data.projectId)) &&
         get(/databases/$(database)/documents/projects/$(request.resource.data.projectId)).data.clientCompanyId == request.resource.data.clientCompanyId &&
-        get(/databases/$(database)/documents/projects/$(request.resource.data.projectId)).data.developerCompanyId == request.resource.data.developerCompanyId &&
-        // General category cannot be created directly by client to prevent bypassing quota
-        (request.resource.data.category == 'critical' && request.resource.data.criticalJustification != null);
+        get(/databases/$(database)/documents/projects/$(request.resource.data.projectId)).data.developerCompanyId == request.resource.data.developerCompanyId;
 
       allow update: if isAuthenticated() &&
-        // Tenancy keys are strictly immutable
         request.resource.data.developerCompanyId == resource.data.developerCompanyId &&
         request.resource.data.clientCompanyId == resource.data.clientCompanyId &&
         request.resource.data.projectId == resource.data.projectId &&
@@ -227,7 +229,18 @@ service cloud.firestore {
 
       allow create: if isAuthenticated() &&
         isClientUser(request.resource.data.clientCompanyId) &&
+        request.resource.data.keys().hasOnly([
+          'id', 'reportId', 'clientCompanyId', 'developerCompanyId', 'projectId',
+          'title', 'description', 'moduleAffected', 'originalImageUrl', 'annotatedImageUrl',
+          'annotations', 'evidenceFiles', 'status', 'priority', 'aiFixEligible',
+          'aiFixStatus', 'createdAt', 'updatedAt', 'serverTimestamp'
+        ]) &&
         request.resource.data.status == 'received' &&
+        request.resource.data.aiFixStatus == 'not_started' &&
+        request.resource.data.title is string &&
+        request.resource.data.title.size() <= 200 &&
+        request.resource.data.description is string &&
+        request.resource.data.description.size() <= 5000 &&
         exists(/databases/$(database)/documents/incidentReports/$(request.resource.data.reportId)) &&
         get(/databases/$(database)/documents/incidentReports/$(request.resource.data.reportId)).data.clientCompanyId == request.resource.data.clientCompanyId &&
         get(/databases/$(database)/documents/incidentReports/$(request.resource.data.reportId)).data.developerCompanyId == request.resource.data.developerCompanyId;
@@ -284,8 +297,6 @@ service cloud.firestore {
       allow read: if isAuthenticated() &&
         (isClientUser(resource.data.clientCompanyId) || isDevCommercial(resource.data.developerCompanyId));
 
-      // ONLY Dev Commercial / Dev Owner / SuperAdmin can create quotes
-      // Technical staff (dev_engineer) CANNOT create quotes!
       allow create: if isAuthenticated() &&
         isDevCommercial(request.resource.data.developerCompanyId) &&
         exists(/databases/$(database)/documents/clientCompanies/$(request.resource.data.clientCompanyId));
@@ -293,9 +304,7 @@ service cloud.firestore {
       allow update: if isAuthenticated() &&
         request.resource.data.developerCompanyId == resource.data.developerCompanyId &&
         request.resource.data.clientCompanyId == resource.data.clientCompanyId &&
-        // Dev Commercial can update quote details
         (isDevCommercial(resource.data.developerCompanyId) ||
-         // Client Admin can ONLY approve or reject, modifying strictly approval metadata
          (isClientAdmin(resource.data.clientCompanyId) &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'status', 'approvedAt', 'rejectedAt', 'rejectionReason', 'approvedBy'
@@ -309,8 +318,6 @@ service cloud.firestore {
     // 10. AI REPAIR RUNS (Orchestration Engine - Technical Only)
     // =========================================================================
     match /aiRepairRuns/{runId} {
-      // ONLY Dev Engineers / Dev Admin / SuperAdmin can read or write
-      // Clients have ZERO access to AI repair runs
       allow read: if isDevEngineer(resource.data.developerCompanyId);
 
       allow create: if isAuthenticated() &&
@@ -324,12 +331,20 @@ service cloud.firestore {
     }
 
     // =========================================================================
-    // 11. DAILY QUOTAS (Transactional server tracking)
+    // 11. DAILY QUOTAS, IDEMPOTENCY & RATE LIMITS (Server Managed)
     // =========================================================================
     match /dailyQuotas/{quotaId} {
       allow read: if isAuthenticated() &&
         (isClientUser(resource.data.clientCompanyId) || isDevStaff(resource.data.developerCompanyId));
-      allow write: if false; // Server Cloud Functions only
+      allow write: if false;
+    }
+
+    match /idempotencyRecords/{docId} {
+      allow read, write: if false; // Server Cloud Functions only
+    }
+
+    match /rateLimits/{docId} {
+      allow read, write: if false; // Server Cloud Functions only
     }
 
     // =========================================================================
@@ -340,7 +355,7 @@ service cloud.firestore {
         (isSuperAdmin() ||
          (resource.data.developerCompanyId != null && isDevAdmin(resource.data.developerCompanyId)) ||
          (resource.data.clientCompanyId != null && isClientAdmin(resource.data.clientCompanyId)));
-      allow write: if false; // Managed exclusively by Cloud Functions
+      allow write: if false;
     }
 
     // =========================================================================
@@ -350,7 +365,7 @@ service cloud.firestore {
       allow read: if isAuthenticated() &&
         (isSuperAdmin() ||
          (resource.data.developerCompanyId != null && isDevAdmin(resource.data.developerCompanyId)));
-      allow write: if false; // Server backend only
+      allow write: if false;
     }
   }
 }

@@ -455,12 +455,14 @@ describe('Firebase Emulator Suite — Firestore Security & Multi-Tenant Isolatio
     // MUST SUCCEED: Critical incidents (24/7) with justification can be created directly by verified client
     await assertSucceeds(
       setDoc(doc(clientUserDb, 'incidentReports', 'rep-critical-allowed'), {
+        id: 'rep-critical-allowed',
         category: 'critical',
         clientCompanyId: 'client-sanjose',
         developerCompanyId: 'dev-pachax',
         projectId: 'proj-sanjose-pos',
         reportedBy: 'user-sanjose-op',
         status: 'received',
+        title: 'Servidor POS completamente caído',
         criticalJustification: 'Servidor caído completamente - SLA emergencia',
         createdAt: new Date().toISOString(),
       })
@@ -541,6 +543,128 @@ describe('Firebase Emulator Suite — Firestore Security & Multi-Tenant Isolatio
         developerCompanyId: 'dev-pachax',
         clientCompanyId: 'client-sanjose',
         apiKeyHash: 'hash-abc-123',
+      })
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // SCENARIO 10: Inyección de campos administrativos en Incidencias Críticas
+  // ---------------------------------------------------------------------------
+  it('10. Debe impedir que un cliente inyecte campos administrativos arbitrarios (assignedTo, aiFixStatus, etc.)', async () => {
+    if (!testEnv) return;
+    const clientUserDb = testEnv
+      .authenticatedContext('user-sanjose-op', {
+        role: 'client_user',
+        clientCompanyId: 'client-sanjose',
+        developerCompanyId: 'dev-pachax',
+      })
+      .firestore();
+
+    // MUST FAIL: Attempting to inject administrative fields into incidentReport
+    await assertFails(
+      setDoc(doc(clientUserDb, 'incidentReports', 'rep-injected-admin'), {
+        id: 'rep-injected-admin',
+        category: 'critical',
+        clientCompanyId: 'client-sanjose',
+        developerCompanyId: 'dev-pachax',
+        projectId: 'proj-sanjose-pos',
+        reportedBy: 'user-sanjose-op',
+        status: 'received',
+        title: 'Incidencia con inyección',
+        criticalJustification: 'Justificación detallada de más de veinte caracteres válidos',
+        createdAt: new Date().toISOString(),
+        assignedTo: 'engineer-pachax-lead', // FORBIDDEN: Administrative field injection
+        internalEngineeringNotes: 'Arbitrary admin data', // FORBIDDEN
+      })
+    );
+
+    // MUST FAIL: Attempting to fabricate aiFixStatus != 'not_started' on incidentItems
+    await assertFails(
+      setDoc(doc(clientUserDb, 'incidentItems', 'item-forged-ai'), {
+        id: 'item-forged-ai',
+        reportId: 'rep-sanjose-1',
+        clientCompanyId: 'client-sanjose',
+        developerCompanyId: 'dev-pachax',
+        projectId: 'proj-sanjose-pos',
+        title: 'Error con estado IA manipulado',
+        description: 'Descripción técnica de prueba',
+        status: 'received',
+        aiFixStatus: 'completed', // FORBIDDEN: Client cannot forge AI repair status
+      })
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // SCENARIO 11: Restricciones de tamaño en Incidencias Críticas
+  // ---------------------------------------------------------------------------
+  it('11. Debe exigir una justificación crítica no trivial (mínimo 20 caracteres) y respetar límites', async () => {
+    if (!testEnv) return;
+    const clientUserDb = testEnv
+      .authenticatedContext('user-sanjose-op', {
+        role: 'client_user',
+        clientCompanyId: 'client-sanjose',
+        developerCompanyId: 'dev-pachax',
+      })
+      .firestore();
+
+    // MUST FAIL: Justification too short (< 20 chars)
+    await assertFails(
+      setDoc(doc(clientUserDb, 'incidentReports', 'rep-crit-short-just'), {
+        id: 'rep-crit-short-just',
+        category: 'critical',
+        clientCompanyId: 'client-sanjose',
+        developerCompanyId: 'dev-pachax',
+        projectId: 'proj-sanjose-pos',
+        reportedBy: 'user-sanjose-op',
+        status: 'received',
+        title: 'Error de ventas urgentes',
+        criticalJustification: 'Se cayó', // Demasiado corto (7 caracteres)
+        createdAt: new Date().toISOString(),
+      })
+    );
+
+    // MUST SUCCEED: Justification properly detailed (>= 20 chars)
+    await assertSucceeds(
+      setDoc(doc(clientUserDb, 'incidentReports', 'rep-crit-valid-just'), {
+        id: 'rep-crit-valid-just',
+        category: 'critical',
+        clientCompanyId: 'client-sanjose',
+        developerCompanyId: 'dev-pachax',
+        projectId: 'proj-sanjose-pos',
+        reportedBy: 'user-sanjose-op',
+        status: 'received',
+        title: 'Caída de servidor POS y terminales de cobro',
+        criticalJustification: 'El servidor central POS no responde a las solicitudes de venta bloqueando toda la sucursal',
+        createdAt: new Date().toISOString(),
+      })
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // SCENARIO 12: Bloqueo de acceso directo a registros de idempotencia y límites
+  // ---------------------------------------------------------------------------
+  it('12. Debe impedir que cualquier usuario lea o modifique registros de idempotencia o rate limits', async () => {
+    if (!testEnv) return;
+    const clientUserDb = testEnv
+      .authenticatedContext('user-sanjose-op', {
+        role: 'client_user',
+        clientCompanyId: 'client-sanjose',
+        developerCompanyId: 'dev-pachax',
+      })
+      .firestore();
+
+    // MUST FAIL: Client cannot write to idempotencyRecords
+    await assertFails(
+      setDoc(doc(clientUserDb, 'idempotencyRecords', 'record-1'), {
+        clientCompanyId: 'client-sanjose',
+        reportId: 'rep-fake',
+      })
+    );
+
+    // MUST FAIL: Client cannot write to rateLimits
+    await assertFails(
+      setDoc(doc(clientUserDb, 'rateLimits', 'client-sanjose_crit'), {
+        count: 0,
       })
     );
   });

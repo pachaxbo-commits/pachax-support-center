@@ -61,11 +61,46 @@ export const ReportGeneralIncidentPage: React.FC = () => {
       const projs = await api.getProjects(currentUser?.clientCompanyId);
       setProjects(projs);
       if (projs.length > 0) {
-        setSelectedProjectId(projs[0].id);
+        setSelectedProjectId((prev) => prev || projs[0].id);
       }
     }
     loadProjects();
   }, [currentUser]);
+
+  // Restore draft from sessionStorage if available
+  useEffect(() => {
+    try {
+      const savedDraft = sessionStorage.getItem('pachax_draft_general_incident');
+      if (savedDraft) {
+        const parsed = JSON.parse(savedDraft);
+        if (parsed.errors && Array.isArray(parsed.errors) && parsed.errors.length > 0) {
+          setErrors(parsed.errors);
+        }
+        if (parsed.selectedProjectId) {
+          setSelectedProjectId(parsed.selectedProjectId);
+        }
+        if (parsed.reportTitle) {
+          setReportTitle(parsed.reportTitle);
+        }
+      }
+    } catch {
+      // Ignored
+    }
+  }, []);
+
+  // Auto-save draft on changes to prevent data loss
+  useEffect(() => {
+    if (!submissionSuccess && errors.length > 0) {
+      try {
+        sessionStorage.setItem(
+          'pachax_draft_general_incident',
+          JSON.stringify({ errors, selectedProjectId, reportTitle })
+        );
+      } catch {
+        // Ignored
+      }
+    }
+  }, [errors, selectedProjectId, reportTitle, submissionSuccess]);
 
   const handleAddError = () => {
     if (errors.length >= 10) {
@@ -185,6 +220,11 @@ export const ReportGeneralIncidentPage: React.FC = () => {
       });
 
       setSubmissionSuccess(true);
+      try {
+        sessionStorage.removeItem('pachax_draft_general_incident');
+      } catch {
+        // Ignored
+      }
       setTimeout(() => {
         navigate('/client/history');
       }, 1500);

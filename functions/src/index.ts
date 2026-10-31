@@ -29,9 +29,16 @@ function getOperationalDayString(date: Date = new Date(), timeZone: string = "Am
     });
     return formatter.format(date); // Returns YYYY-MM-DD
   } catch {
-    // Fallback if timezone not supported
     return date.toISOString().split("T")[0];
   }
+}
+
+/**
+ * Deterministic, tenant-scoped idempotency key generator
+ */
+function getTenantIdempotencyDocId(clientCompanyId: string, projectId: string, rawKey: string): string {
+  const hash = crypto.createHash("sha256").update(`${clientCompanyId}:${projectId}:${rawKey}`).digest("hex").substring(0, 32);
+  return `${clientCompanyId}_${projectId}_${hash}`;
 }
 
 /**
@@ -162,7 +169,8 @@ export const inviteUser = onCall(async (request) => {
  * - Checks status is "pending".
  * - Compares SHA-256 hash.
  * - Checks expiration.
- * - Atomically marks invitation as "accepted" and configures custom claims and user profile.
+ * - Atomically marks invitation as "accepted" in transaction.
+ * - Applies Custom Claims strictly after successful transaction to prevent inconsistent states.
  */
 export const acceptInvitation = onCall(async (request) => {
   if (!request.auth) {
@@ -179,8 +187,10 @@ export const acceptInvitation = onCall(async (request) => {
   const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
 
   const invitationRef = db.collection("userInvitations").doc(invitationId);
+  let resolvedInviteData: any = null;
 
-  return await db.runTransaction(async (transaction) => {
+  // 1. Transactional reservation and verification
+  await db.runTransaction(async (transaction) => {
     const inviteDoc = await transaction.get(invitationRef);
     if (!inviteDoc.exists) {
       throw new HttpsError("not-found", "La invitación especificada no existe.");
@@ -214,18 +224,11 @@ export const acceptInvitation = onCall(async (request) => {
       );
     }
 
-    // Mark invitation accepted
+    // Mark invitation accepted (single-use guarantee)
     transaction.update(invitationRef, {
       status: "accepted",
       usedAt: admin.firestore.FieldValue.serverTimestamp(),
       usedByUid: callerUid,
-    });
-
-    // Set Custom Claims
-    await admin.auth().setCustomUserClaims(callerUid, {
-      role: inviteData.role,
-      developerCompanyId: inviteData.developerCompanyId,
-      clientCompanyId: inviteData.clientCompanyId,
     });
 
     // Create or update user profile
@@ -258,14 +261,23 @@ export const acceptInvitation = onCall(async (request) => {
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    return {
-      success: true,
-      role: inviteData.role,
-      developerCompanyId: inviteData.developerCompanyId,
-      clientCompanyId: inviteData.clientCompanyId,
-      message: "Invitación aceptada y cuenta vinculada exitosamente.",
-    };
+    resolvedInviteData = inviteData;
   });
+
+  // 2. Set Custom Claims strictly AFTER successful transaction commit
+  await admin.auth().setCustomUserClaims(callerUid, {
+    role: resolvedInviteData.role,
+    developerCompanyId: resolvedInviteData.developerCompanyId,
+    clientCompanyId: resolvedInviteData.clientCompanyId,
+  });
+
+  return {
+    success: true,
+    role: resolvedInviteData.role,
+    developerCompanyId: resolvedInviteData.developerCompanyId,
+    clientCompanyId: resolvedInviteData.clientCompanyId,
+    message: "Invitación aceptada y cuenta vinculada exitosamente.",
+  };
 });
 
 /**
@@ -407,11 +419,10 @@ export const checkDailyGeneralQuota = onCall(async (request) => {
 
 /**
  * 5. Atomic General Incident Batch Submission
- * Enforces transactional quota reservation:
- * 1. Validates authenticated caller and tenant membership.
- * 2. Checks idempotency key to prevent double submits.
- * 3. Uses a Firestore transaction on `dailyQuotas/${clientCompanyId}_${operationalDay}`.
- * 4. Atomically reserves quota, creates incidentReport and creates all incidentItems.
+ * Enforces transactional quota reservation and strictly tenant-isolated idempotency:
+ * - Scoped idempotency per clientCompanyId + projectId + key.
+ * - Re-execution by client A with key "k1" NEVER leaks data or reports from client B.
+ * - Atomically reserves quota in `dailyQuotas/${clientCompanyId}_${operationalDay}`.
  */
 export const submitGeneralIncidentBatch = onCall(async (request) => {
   if (!request.auth) {
@@ -464,22 +475,25 @@ export const submitGeneralIncidentBatch = onCall(async (request) => {
   const quotaDocId = `${clientCompanyId}_${operationalDay}`;
   const quotaDocRef = db.collection("dailyQuotas").doc(quotaDocId);
 
-  // Idempotency check: if report with idempotencyKey already exists, return it
-  if (idempotencyKey) {
-    const existingSnap = await db
-      .collection("incidentReports")
-      .where("idempotencyKey", "==", idempotencyKey)
-      .limit(1)
-      .get();
+  // Tenant-Scoped Idempotency Record Reference
+  const idempotencyDocId = idempotencyKey
+    ? getTenantIdempotencyDocId(clientCompanyId, projectId, idempotencyKey)
+    : null;
+  const idempotencyDocRef = idempotencyDocId
+    ? db.collection("idempotencyRecords").doc(idempotencyDocId)
+    : null;
 
-    if (!existingSnap.empty) {
-      const existing = existingSnap.docs[0];
+  // Pre-check idempotency outside transaction for fast replay
+  if (idempotencyDocRef) {
+    const existingKeyDoc = await idempotencyDocRef.get();
+    if (existingKeyDoc.exists) {
+      const existingData = existingKeyDoc.data()!;
       return {
         success: true,
-        reportId: existing.id,
+        reportId: existingData.reportId,
         operationalDay,
         isIdempotentReplay: true,
-        message: "Reporte recuperado por clave de idempotencia.",
+        message: "Reporte general recuperado por clave de idempotencia.",
       };
     }
   }
@@ -489,8 +503,16 @@ export const submitGeneralIncidentBatch = onCall(async (request) => {
 
   // Run atomic Firestore transaction
   await db.runTransaction(async (transaction) => {
-    const quotaSnap = await transaction.get(quotaDocRef);
+    // 1. Double check idempotency inside transaction
+    if (idempotencyDocRef) {
+      const txKeyDoc = await transaction.get(idempotencyDocRef);
+      if (txKeyDoc.exists) {
+        return; // Already created by a concurrent request
+      }
+    }
 
+    // 2. Check and reserve daily quota
+    const quotaSnap = await transaction.get(quotaDocRef);
     if (quotaSnap.exists && (quotaSnap.data()?.count || 0) >= 1) {
       throw new HttpsError(
         "resource-exhausted",
@@ -511,6 +533,16 @@ export const submitGeneralIncidentBatch = onCall(async (request) => {
       },
       { merge: true }
     );
+
+    // Save idempotency record (strictly tenant-isolated)
+    if (idempotencyDocRef) {
+      transaction.set(idempotencyDocRef, {
+        clientCompanyId,
+        projectId,
+        reportId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
 
     // Create Report document
     transaction.set(reportRef, {
@@ -567,5 +599,212 @@ export const submitGeneralIncidentBatch = onCall(async (request) => {
     itemsCount: items.length,
     operationalDay,
     message: "Reporte general consolidado registrado exitosamente.",
+  };
+});
+
+/**
+ * 6. Atomic Critical Incident Submission (24/7 SLA)
+ * Hardened with:
+ * - Client authentication & tenant boundary verification.
+ * - Rate limiting: Max 5 critical incidents per hour per client to prevent flood attacks.
+ * - String size restrictions: Title (max 200 chars), justification (20 to 2000 chars), description (max 5000 chars).
+ * - Disallows injection of arbitrary administrative fields.
+ * - Immediate audit log emission.
+ */
+export const submitCriticalIncident = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Autenticación requerida para reportar incidencias críticas.");
+  }
+
+  const callerUid = request.auth.uid;
+  const callerDoc = await db.collection("users").doc(callerUid).get();
+  const callerData = callerDoc.data();
+
+  if (!callerData || callerData.status !== "active") {
+    throw new HttpsError("permission-denied", "Usuario inactivo o no autorizado.");
+  }
+
+  const {
+    clientCompanyId,
+    developerCompanyId,
+    projectId,
+    title,
+    description,
+    moduleAffected,
+    criticalJustification,
+    emergencyPhone,
+    originalImageUrl,
+    annotatedImageUrl,
+    annotations,
+    evidenceFiles,
+    idempotencyKey,
+  } = request.data;
+
+  // Strict field presence & length checks
+  if (!clientCompanyId || !projectId || !title || !criticalJustification || !description) {
+    throw new HttpsError(
+      "invalid-argument",
+      "clientCompanyId, projectId, title, criticalJustification y description son obligatorios."
+    );
+  }
+
+  if (typeof title !== "string" || title.trim().length < 5 || title.length > 200) {
+    throw new HttpsError("invalid-argument", "El título debe tener entre 5 y 200 caracteres.");
+  }
+
+  if (typeof criticalJustification !== "string" || criticalJustification.trim().length < 20 || criticalJustification.length > 2000) {
+    throw new HttpsError(
+      "invalid-argument",
+      "La justificación crítica debe describir detalladamente el bloqueo (entre 20 y 2000 caracteres)."
+    );
+  }
+
+  if (typeof description !== "string" || description.length > 5000) {
+    throw new HttpsError("invalid-argument", "La descripción técnica no debe exceder 5000 caracteres.");
+  }
+
+  // Tenant validation
+  if (callerData.role !== "superadmin" && callerData.clientCompanyId !== clientCompanyId) {
+    throw new HttpsError(
+      "permission-denied",
+      "No puedes reportar incidencias críticas para otra empresa cliente."
+    );
+  }
+
+  // Project validation
+  const projectDoc = await db.collection("projects").doc(projectId).get();
+  if (!projectDoc.exists) {
+    throw new HttpsError("not-found", "El proyecto especificado no existe.");
+  }
+
+  const projectData = projectDoc.data()!;
+  if (projectData.clientCompanyId !== clientCompanyId) {
+    throw new HttpsError("permission-denied", "El proyecto no pertenece a su empresa cliente.");
+  }
+
+  const effectiveDevCompanyId = projectData.developerCompanyId || developerCompanyId;
+
+  // Rate limiting per client per hour (max 5 critical incidents per hour)
+  const hourWindow = new Date().toISOString().substring(0, 13); // YYYY-MM-DDTHH
+  const rateLimitRef = db.collection("rateLimits").doc(`${clientCompanyId}_crit_${hourWindow}`);
+
+  // Idempotency check
+  const idempotencyDocId = idempotencyKey
+    ? getTenantIdempotencyDocId(clientCompanyId, projectId, idempotencyKey)
+    : null;
+  const idempotencyDocRef = idempotencyDocId
+    ? db.collection("idempotencyRecords").doc(idempotencyDocId)
+    : null;
+
+  if (idempotencyDocRef) {
+    const existingSnap = await idempotencyDocRef.get();
+    if (existingSnap.exists) {
+      return {
+        success: true,
+        reportId: existingSnap.data()!.reportId,
+        isIdempotentReplay: true,
+        message: "Incidencia crítica recuperada por clave de idempotencia.",
+      };
+    }
+  }
+
+  const reportId = `rep-crit-${Date.now().toString(36)}`;
+  const itemId = `item-${reportId}-1`;
+  const reportRef = db.collection("incidentReports").doc(reportId);
+  const itemRef = db.collection("incidentItems").doc(itemId);
+
+  await db.runTransaction(async (transaction) => {
+    // 1. Rate limiting check
+    const rateSnap = await transaction.get(rateLimitRef);
+    const countThisHour = rateSnap.exists ? (rateSnap.data()?.count || 0) : 0;
+    if (countThisHour >= 5) {
+      throw new HttpsError(
+        "resource-exhausted",
+        "Límite de frecuencia: Se han reportado 5 incidencias críticas en esta hora. Si la parada persiste, contacte por teléfono directo al equipo de guardia."
+      );
+    }
+
+    transaction.set(
+      rateLimitRef,
+      {
+        clientCompanyId,
+        hourWindow,
+        count: countThisHour + 1,
+        lastReportId: reportId,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    // 2. Reserve idempotency
+    if (idempotencyDocRef) {
+      transaction.set(idempotencyDocRef, {
+        clientCompanyId,
+        projectId,
+        reportId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    // 3. Create incidentReport
+    transaction.set(reportRef, {
+      id: reportId,
+      clientCompanyId,
+      developerCompanyId: effectiveDevCompanyId,
+      projectId,
+      projectName: projectData.name || "Proyecto",
+      reportedBy: callerUid,
+      reportedByEmail: callerData.email,
+      category: "critical",
+      title: `[CRÍTICO] ${title.trim()}`,
+      itemsCount: 1,
+      status: "received",
+      criticalJustification: criticalJustification.trim(),
+      emergencyPhone: emergencyPhone ? String(emergencyPhone).trim() : null,
+      idempotencyKey: idempotencyKey || null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // 4. Create incidentItem
+    transaction.set(itemRef, {
+      id: itemId,
+      reportId,
+      clientCompanyId,
+      developerCompanyId: effectiveDevCompanyId,
+      projectId,
+      title: title.trim(),
+      description: `${description.trim()}\n\n[JUSTIFICACIÓN CRÍTICA: ${criticalJustification.trim()}]${emergencyPhone ? `\n[TELÉFONO DE CONTACTO: ${emergencyPhone}]` : ""}`,
+      moduleAffected: moduleAffected || "Módulo Crítico",
+      originalImageUrl: originalImageUrl || null,
+      annotatedImageUrl: annotatedImageUrl || null,
+      annotations: annotations || [],
+      evidenceFiles: evidenceFiles || [],
+      status: "received",
+      priority: "urgent",
+      aiFixEligible: true,
+      aiFixStatus: "not_started",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // 5. Audit Log
+    const auditRef = db.collection("auditLogs").doc();
+    transaction.set(auditRef, {
+      action: "CRITICAL_INCIDENT_DISPATCHED",
+      reportId,
+      clientCompanyId,
+      developerCompanyId: effectiveDevCompanyId,
+      projectId,
+      reportedBy: callerUid,
+      reportedByEmail: callerData.email,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+
+  return {
+    success: true,
+    reportId,
+    message: "Incidencia crítica registrada con éxito. El equipo de soporte 24/7 ha sido notificado.",
   };
 });

@@ -43,11 +43,50 @@ export const ReportCriticalIncidentPage: React.FC = () => {
       const projs = await api.getProjects(currentUser?.clientCompanyId);
       setProjects(projs);
       if (projs.length > 0) {
-        setSelectedProjectId(projs[0].id);
+        setSelectedProjectId((prev) => prev || projs[0].id);
       }
     }
     loadProjects();
   }, [currentUser]);
+
+  // Restore draft from sessionStorage
+  useEffect(() => {
+    try {
+      const savedDraft = sessionStorage.getItem('pachax_draft_critical_incident');
+      if (savedDraft) {
+        const parsed = JSON.parse(savedDraft);
+        if (parsed.title) setTitle(parsed.title);
+        if (parsed.description) setDescription(parsed.description);
+        if (parsed.moduleAffected) setModuleAffected(parsed.moduleAffected);
+        if (parsed.justification) setJustification(parsed.justification);
+        if (parsed.emergencyPhone) setEmergencyPhone(parsed.emergencyPhone);
+        if (parsed.selectedProjectId) setSelectedProjectId(parsed.selectedProjectId);
+      }
+    } catch {
+      // Ignored
+    }
+  }, []);
+
+  // Auto-save draft on changes to avoid data loss
+  useEffect(() => {
+    if (!submitted && (title || description || justification)) {
+      try {
+        sessionStorage.setItem(
+          'pachax_draft_critical_incident',
+          JSON.stringify({
+            title,
+            description,
+            moduleAffected,
+            justification,
+            emergencyPhone,
+            selectedProjectId,
+          })
+        );
+      } catch {
+        // Ignored
+      }
+    }
+  }, [title, description, moduleAffected, justification, emergencyPhone, selectedProjectId, submitted]);
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -105,6 +144,11 @@ export const ReportCriticalIncidentPage: React.FC = () => {
       });
 
       setSubmitted(true);
+      try {
+        sessionStorage.removeItem('pachax_draft_critical_incident');
+      } catch {
+        // Ignored
+      }
       setTimeout(() => {
         navigate('/client/history');
       }, 2500);
