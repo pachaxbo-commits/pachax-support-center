@@ -19,7 +19,9 @@ export const AppLayout: React.FC = () => {
       await sendVerificationEmail();
       setSentSuccess(true);
     } catch (err: any) {
-      setSendError(err.message || 'Error al enviar correo de verificación');
+      const code = err?.code ? `[${err.code}] ` : '';
+      const msg = err?.message || 'Error al enviar correo de verificación';
+      setSendError(`${code}${msg}`);
     } finally {
       setIsSending(false);
     }
@@ -76,8 +78,8 @@ export const AppLayout: React.FC = () => {
             </div>
           </div>
           {sendError && (
-            <div className="max-w-7xl mx-auto mt-1 text-[11px] text-rose-600 dark:text-rose-400">
-              {sendError}
+            <div className="max-w-7xl mx-auto mt-2 p-2 rounded-lg bg-rose-100 dark:bg-rose-950/70 border border-rose-300 dark:border-rose-900 text-rose-900 dark:text-rose-200 font-mono text-[11px] break-all">
+              <strong>Error de Firebase:</strong> {sendError}
             </div>
           )}
         </div>

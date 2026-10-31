@@ -22,6 +22,7 @@ dist-ssr
 .env.*.local
 serviceAccountKey.json
 *.pem
+.secure-verification-link.txt
 
 # Editor directories and files
 .vscode/*

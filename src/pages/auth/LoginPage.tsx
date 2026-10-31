@@ -23,7 +23,8 @@ export const LoginPage: React.FC = () => {
       await login(email, password);
       navigate('/client/dashboard');
     } catch (err: any) {
-      setError(err?.message || 'Error al iniciar sesión. Revisa tus credenciales.');
+      const code = err?.code ? `[${err.code}] ` : '';
+      setError(`${code}${err?.message || 'Error al iniciar sesión. Revisa tus credenciales.'}`);
     } finally {
       setLoading(false);
     }
