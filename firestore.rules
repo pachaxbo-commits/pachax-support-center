@@ -1,0 +1,371 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Deny all by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // HELPER FUNCTIONS & AUTHENTICATION CONTEXT
+    // =========================================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function currentUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userExists() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getCallerRole() {
+      return request.auth.token.role != null
+        ? request.auth.token.role
+        : (userExists() ? currentUserDoc().data.role : null);
+    }
+
+    function getCallerDevId() {
+      return request.auth.token.developerCompanyId != null
+        ? request.auth.token.developerCompanyId
+        : (userExists() ? currentUserDoc().data.developerCompanyId : null);
+    }
+
+    function getCallerClientId() {
+      return request.auth.token.clientCompanyId != null
+        ? request.auth.token.clientCompanyId
+        : (userExists() ? currentUserDoc().data.clientCompanyId : null);
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && getCallerRole() == 'superadmin';
+    }
+
+    // Role Hierarchy & Separation
+    function isDevAdmin(devCompanyId) {
+      return isAuthenticated() &&
+        (isSuperAdmin() ||
+         (getCallerDevId() == devCompanyId && getCallerRole() in ['dev_owner', 'dev_admin']));
+    }
+
+    function isDevCommercial(devCompanyId) {
+      return isAuthenticated() &&
+        (isSuperAdmin() ||
+         (getCallerDevId() == devCompanyId && getCallerRole() in ['dev_owner', 'dev_admin', 'dev_commercial']));
+    }
+
+    function isDevEngineer(devCompanyId) {
+      return isAuthenticated() &&
+        (isSuperAdmin() ||
+         (getCallerDevId() == devCompanyId && getCallerRole() in ['dev_owner', 'dev_admin', 'dev_engineer']));
+    }
+
+    function isDevStaff(devCompanyId) {
+      return isAuthenticated() &&
+        (isSuperAdmin() ||
+         (getCallerDevId() == devCompanyId && getCallerRole() in ['dev_owner', 'dev_admin', 'dev_engineer', 'dev_commercial']));
+    }
+
+    function isClientAdmin(clientCompanyId) {
+      return isAuthenticated() &&
+        (isSuperAdmin() ||
+         (getCallerClientId() == clientCompanyId && getCallerRole() == 'client_admin'));
+    }
+
+    function isClientUser(clientCompanyId) {
+      return isAuthenticated() &&
+        (isSuperAdmin() ||
+         (getCallerClientId() == clientCompanyId && getCallerRole() in ['client_admin', 'client_user']));
+    }
+
+    // =========================================================================
+    // 1. USERS COLLECTION
+    // =========================================================================
+    match /users/{userId} {
+      allow read: if isAuthenticated() &&
+        (request.auth.uid == userId ||
+         isSuperAdmin() ||
+         (resource.data.developerCompanyId != null && isDevStaff(resource.data.developerCompanyId)) ||
+         (resource.data.clientCompanyId != null && isClientAdmin(resource.data.clientCompanyId)));
+
+      allow update: if isAuthenticated() &&
+        ((request.auth.uid == userId &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+            'role', 'developerCompanyId', 'clientCompanyId', 'status', 'permissions', 'email', 'customClaims'
+          ])) ||
+         (isDevAdmin(resource.data.developerCompanyId) &&
+          request.resource.data.developerCompanyId == resource.data.developerCompanyId &&
+          request.resource.data.role != 'superadmin') ||
+         isSuperAdmin());
+
+      allow create: if isSuperAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // =========================================================================
+    // 2. DEVELOPER COMPANIES
+    // =========================================================================
+    match /developerCompanies/{companyId} {
+      allow read: if isDevStaff(companyId);
+      allow update: if isDevAdmin(companyId) &&
+        request.resource.data.id == resource.data.id;
+      allow create, delete: if isSuperAdmin();
+    }
+
+    // =========================================================================
+    // 3. CLIENT COMPANIES
+    // =========================================================================
+    match /clientCompanies/{clientId} {
+      allow read: if isClientUser(clientId) ||
+        (resource.data.developerCompanyId != null && isDevStaff(resource.data.developerCompanyId));
+
+      allow create: if isAuthenticated() &&
+        (isSuperAdmin() || isDevAdmin(request.resource.data.developerCompanyId));
+
+      allow update: if isAuthenticated() &&
+        (isSuperAdmin() ||
+         (isDevAdmin(resource.data.developerCompanyId) &&
+          request.resource.data.developerCompanyId == resource.data.developerCompanyId));
+
+      allow delete: if isSuperAdmin();
+    }
+
+    // =========================================================================
+    // 4. PROJECTS
+    // =========================================================================
+    match /projects/{projectId} {
+      allow read: if isAuthenticated() &&
+        (isClientUser(resource.data.clientCompanyId) || isDevStaff(resource.data.developerCompanyId));
+
+      allow create: if isAuthenticated() &&
+        (isSuperAdmin() ||
+         (isDevAdmin(request.resource.data.developerCompanyId) &&
+          exists(/databases/$(database)/documents/clientCompanies/$(request.resource.data.clientCompanyId)) &&
+          get(/databases/$(database)/documents/clientCompanies/$(request.resource.data.clientCompanyId)).data.developerCompanyId == request.resource.data.developerCompanyId));
+
+      allow update: if isAuthenticated() &&
+        (isSuperAdmin() ||
+         (isDevAdmin(resource.data.developerCompanyId) &&
+          request.resource.data.developerCompanyId == resource.data.developerCompanyId &&
+          request.resource.data.clientCompanyId == resource.data.clientCompanyId));
+
+      allow delete: if isSuperAdmin();
+    }
+
+    // =========================================================================
+    // 5. APP INSTALLATIONS (SDK Integrations)
+    // =========================================================================
+    match /appInstallations/{installId} {
+      allow read: if isAuthenticated() &&
+        (isDevStaff(resource.data.developerCompanyId) || isClientUser(resource.data.clientCompanyId));
+
+      allow create: if isAuthenticated() &&
+        (isSuperAdmin() ||
+         (isDevAdmin(request.resource.data.developerCompanyId) &&
+          exists(/databases/$(database)/documents/clientCompanies/$(request.resource.data.clientCompanyId))));
+
+      allow update: if isAuthenticated() &&
+        (isSuperAdmin() ||
+         (isDevAdmin(resource.data.developerCompanyId) &&
+          request.resource.data.developerCompanyId == resource.data.developerCompanyId &&
+          request.resource.data.clientCompanyId == resource.data.clientCompanyId));
+
+      allow delete: if isSuperAdmin() || (resource.data.developerCompanyId != null && isDevAdmin(resource.data.developerCompanyId));
+    }
+
+    // =========================================================================
+    // 6. INCIDENT REPORTS (Batch Containers)
+    // =========================================================================
+    match /incidentReports/{reportId} {
+      allow read: if isAuthenticated() &&
+        (isClientUser(resource.data.clientCompanyId) || isDevStaff(resource.data.developerCompanyId));
+
+      // Client direct creation: EXCLUSIVELY for validated critical incidents (24/7 SLA)
+      // Disallows administrative field injection and enforces string size constraints
+      allow create: if isAuthenticated() &&
+        isClientUser(request.resource.data.clientCompanyId) &&
+        request.resource.data.reportedBy == request.auth.uid &&
+        request.resource.data.keys().hasOnly([
+          'id', 'clientCompanyId', 'developerCompanyId', 'projectId', 'projectName',
+          'reportedBy', 'reportedByEmail', 'category', 'title', 'itemsCount', 'status',
+          'criticalJustification', 'emergencyPhone', 'dailySubmissionConsentConfirmed',
+          'idempotencyKey', 'operationalDay', 'createdAt', 'updatedAt', 'serverTimestamp'
+        ]) &&
+        request.resource.data.status == 'received' &&
+        request.resource.data.title is string &&
+        request.resource.data.title.size() >= 5 &&
+        request.resource.data.title.size() <= 200 &&
+        request.resource.data.category == 'critical' &&
+        request.resource.data.criticalJustification is string &&
+        request.resource.data.criticalJustification.size() >= 20 &&
+        request.resource.data.criticalJustification.size() <= 2000 &&
+        exists(/databases/$(database)/documents/projects/$(request.resource.data.projectId)) &&
+        get(/databases/$(database)/documents/projects/$(request.resource.data.projectId)).data.clientCompanyId == request.resource.data.clientCompanyId &&
+        get(/databases/$(database)/documents/projects/$(request.resource.data.projectId)).data.developerCompanyId == request.resource.data.developerCompanyId;
+
+      allow update: if isAuthenticated() &&
+        request.resource.data.developerCompanyId == resource.data.developerCompanyId &&
+        request.resource.data.clientCompanyId == resource.data.clientCompanyId &&
+        request.resource.data.projectId == resource.data.projectId &&
+        (isDevStaff(resource.data.developerCompanyId) ||
+         (isClientUser(resource.data.clientCompanyId) &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+            'status', 'assignedTo', 'developerCompanyId', 'clientCompanyId', 'projectId', 'category'
+          ])));
+
+      allow delete: if isSuperAdmin();
+    }
+
+    // =========================================================================
+    // 7. INCIDENT ITEMS (Individual sub-errors)
+    // =========================================================================
+    match /incidentItems/{itemId} {
+      allow read: if isAuthenticated() &&
+        (isClientUser(resource.data.clientCompanyId) || isDevStaff(resource.data.developerCompanyId));
+
+      allow create: if isAuthenticated() &&
+        isClientUser(request.resource.data.clientCompanyId) &&
+        request.resource.data.keys().hasOnly([
+          'id', 'reportId', 'clientCompanyId', 'developerCompanyId', 'projectId',
+          'title', 'description', 'moduleAffected', 'originalImageUrl', 'annotatedImageUrl',
+          'annotations', 'evidenceFiles', 'status', 'priority', 'aiFixEligible',
+          'aiFixStatus', 'createdAt', 'updatedAt', 'serverTimestamp'
+        ]) &&
+        request.resource.data.status == 'received' &&
+        request.resource.data.aiFixStatus == 'not_started' &&
+        request.resource.data.title is string &&
+        request.resource.data.title.size() <= 200 &&
+        request.resource.data.description is string &&
+        request.resource.data.description.size() <= 5000 &&
+        exists(/databases/$(database)/documents/incidentReports/$(request.resource.data.reportId)) &&
+        get(/databases/$(database)/documents/incidentReports/$(request.resource.data.reportId)).data.clientCompanyId == request.resource.data.clientCompanyId &&
+        get(/databases/$(database)/documents/incidentReports/$(request.resource.data.reportId)).data.developerCompanyId == request.resource.data.developerCompanyId;
+
+      allow update: if isAuthenticated() &&
+        request.resource.data.developerCompanyId == resource.data.developerCompanyId &&
+        request.resource.data.clientCompanyId == resource.data.clientCompanyId &&
+        request.resource.data.projectId == resource.data.projectId &&
+        request.resource.data.reportId == resource.data.reportId &&
+        (isDevStaff(resource.data.developerCompanyId) ||
+         (isClientUser(resource.data.clientCompanyId) &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+            'status', 'assignedTo', 'aiFixEligible', 'aiFixStatus',
+            'developerCompanyId', 'clientCompanyId', 'projectId', 'reportId'
+          ])));
+
+      allow delete: if isDevAdmin(resource.data.developerCompanyId) || isSuperAdmin();
+    }
+
+    // =========================================================================
+    // 8. FEATURE REQUESTS (Implementation / Change Requests)
+    // =========================================================================
+    match /featureRequests/{requestId} {
+      allow read: if isAuthenticated() &&
+        (isClientUser(resource.data.clientCompanyId) || isDevStaff(resource.data.developerCompanyId));
+
+      allow create: if isAuthenticated() &&
+        isClientUser(request.resource.data.clientCompanyId) &&
+        request.resource.data.reportedBy == request.auth.uid &&
+        request.resource.data.status == 'submitted' &&
+        !request.resource.data.keys().hasAny(['quoteId', 'estimatedHours']) &&
+        exists(/databases/$(database)/documents/projects/$(request.resource.data.projectId)) &&
+        get(/databases/$(database)/documents/projects/$(request.resource.data.projectId)).data.clientCompanyId == request.resource.data.clientCompanyId &&
+        get(/databases/$(database)/documents/projects/$(request.resource.data.projectId)).data.developerCompanyId == request.resource.data.developerCompanyId;
+
+      allow update: if isAuthenticated() &&
+        request.resource.data.developerCompanyId == resource.data.developerCompanyId &&
+        request.resource.data.clientCompanyId == resource.data.clientCompanyId &&
+        request.resource.data.projectId == resource.data.projectId &&
+        (isDevStaff(resource.data.developerCompanyId) ||
+         (isClientUser(resource.data.clientCompanyId) &&
+          resource.data.status == 'submitted' &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+            'status', 'quoteId', 'estimatedHours', 'developerCompanyId', 'clientCompanyId', 'projectId'
+          ])));
+
+      allow delete: if isDevAdmin(resource.data.developerCompanyId) || isSuperAdmin();
+    }
+
+    // =========================================================================
+    // 9. QUOTES (Commercial Estimates)
+    // =========================================================================
+    match /quotes/{quoteId} {
+      allow read: if isAuthenticated() &&
+        (isClientUser(resource.data.clientCompanyId) || isDevCommercial(resource.data.developerCompanyId));
+
+      allow create: if isAuthenticated() &&
+        isDevCommercial(request.resource.data.developerCompanyId) &&
+        exists(/databases/$(database)/documents/clientCompanies/$(request.resource.data.clientCompanyId));
+
+      allow update: if isAuthenticated() &&
+        request.resource.data.developerCompanyId == resource.data.developerCompanyId &&
+        request.resource.data.clientCompanyId == resource.data.clientCompanyId &&
+        (isDevCommercial(resource.data.developerCompanyId) ||
+         (isClientAdmin(resource.data.clientCompanyId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'approvedAt', 'rejectedAt', 'rejectionReason', 'approvedBy'
+          ]) &&
+          request.resource.data.status in ['approved', 'rejected']));
+
+      allow delete: if isDevAdmin(resource.data.developerCompanyId) || isSuperAdmin();
+    }
+
+    // =========================================================================
+    // 10. AI REPAIR RUNS (Orchestration Engine - Technical Only)
+    // =========================================================================
+    match /aiRepairRuns/{runId} {
+      allow read: if isDevEngineer(resource.data.developerCompanyId);
+
+      allow create: if isAuthenticated() &&
+        isDevEngineer(request.resource.data.developerCompanyId);
+
+      allow update: if isAuthenticated() &&
+        isDevEngineer(resource.data.developerCompanyId) &&
+        request.resource.data.developerCompanyId == resource.data.developerCompanyId;
+
+      allow delete: if isDevAdmin(resource.data.developerCompanyId) || isSuperAdmin();
+    }
+
+    // =========================================================================
+    // 11. DAILY QUOTAS, IDEMPOTENCY & RATE LIMITS (Server Managed)
+    // =========================================================================
+    match /dailyQuotas/{quotaId} {
+      allow read: if isAuthenticated() &&
+        (isClientUser(resource.data.clientCompanyId) || isDevStaff(resource.data.developerCompanyId));
+      allow write: if false;
+    }
+
+    match /idempotencyRecords/{docId} {
+      allow read, write: if false; // Server Cloud Functions only
+    }
+
+    match /rateLimits/{docId} {
+      allow read, write: if false; // Server Cloud Functions only
+    }
+
+    // =========================================================================
+    // 12. USER INVITATIONS (Secure Tokens)
+    // =========================================================================
+    match /userInvitations/{invitationId} {
+      allow read: if isAuthenticated() &&
+        (isSuperAdmin() ||
+         (resource.data.developerCompanyId != null && isDevAdmin(resource.data.developerCompanyId)) ||
+         (resource.data.clientCompanyId != null && isClientAdmin(resource.data.clientCompanyId)));
+      allow write: if false;
+    }
+
+    // =========================================================================
+    // 13. AUDIT LOGS
+    // =========================================================================
+    match /auditLogs/{logId} {
+      allow read: if isAuthenticated() &&
+        (isSuperAdmin() ||
+         (resource.data.developerCompanyId != null && isDevAdmin(resource.data.developerCompanyId)));
+      allow write: if false;
+    }
+  }
+}

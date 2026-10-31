@@ -22,6 +22,7 @@ dist-ssr
 .env.*.local
 serviceAccountKey.json
 *.pem
+.secure-verification-link.txt
 
 # Editor directories and files
 .vscode/*
@@ -42,5 +43,12 @@ coverage
 
 # Firebase cache
 .firebase/
+functions/lib/
+functions/node_modules/
 
 *.tsbuildinfo
+
+vite.config.d.ts
+vite.config.js
+vitest.config.d.ts
+vitest.config.js
