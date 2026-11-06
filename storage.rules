@@ -1,0 +1,60 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() &&
+        ('role' in request.auth.token) &&
+        request.auth.token.role == 'superadmin';
+    }
+
+    function isImage() {
+      return request.resource != null &&
+        request.resource.contentType.matches('image/(jpeg|png|webp)') &&
+        request.resource.size <= 10 * 1024 * 1024; // 10 MB max
+    }
+
+    function isDocument() {
+      return request.resource != null &&
+        (request.resource.contentType.matches('application/pdf') ||
+         request.resource.contentType.matches('text/plain') ||
+         request.resource.contentType.matches('application/json')) &&
+        request.resource.size <= 25 * 1024 * 1024; // 25 MB max
+    }
+
+    function hasDevAccess(devId) {
+      return isSuperAdmin() ||
+        (isAuthenticated() &&
+         ('developerCompanyId' in request.auth.token) &&
+         request.auth.token.developerCompanyId == devId);
+    }
+
+    function hasClientAccess(clientId) {
+      return isSuperAdmin() ||
+        (isAuthenticated() &&
+         ('clientCompanyId' in request.auth.token) &&
+         request.auth.token.clientCompanyId == clientId);
+    }
+
+    // Multi-tenant isolated storage path:
+    // /tenants/{developerCompanyId}/clients/{clientCompanyId}/projects/{projectId}/incidents/{reportId}/{fileName}
+    match /tenants/{devId}/clients/{clientId}/projects/{projId}/{allPaths=**} {
+      allow read: if isAuthenticated() && (hasDevAccess(devId) || hasClientAccess(clientId));
+      allow create, update: if isAuthenticated() &&
+        (hasDevAccess(devId) || hasClientAccess(clientId)) &&
+        (isImage() || isDocument());
+      allow delete: if isAuthenticated() &&
+        (hasDevAccess(devId) || hasClientAccess(clientId));
+    }
+
+    // Public / branding assets
+    match /branding/{allPaths=**} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+  }
+}
