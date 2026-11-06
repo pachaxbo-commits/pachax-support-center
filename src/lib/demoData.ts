@@ -10,6 +10,7 @@ export const DEMO_DEV_COMPANY: DeveloperCompany = {
   id: 'dev-pachax-core',
   name: 'PACHAX Engineering Studio',
   slug: 'pachax',
+  adminEmail: 'pachax.bo@gmail.com',
   supportEmail: 'support@pachax.bo',
   supportPhone: '+591 70000000',
   slaConfig: {

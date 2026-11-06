@@ -32,6 +32,16 @@ export interface EvidenceFile {
   uploadedAt: string;
 }
 
+export interface IncidentComment {
+  id: string;
+  authorUid: string;
+  authorName: string;
+  authorEmail: string;
+  authorRole: string;
+  message: string;
+  createdAt: string;
+}
+
 export interface IncidentItem {
   id: string;
   reportId: string;
@@ -52,6 +62,7 @@ export interface IncidentItem {
     displayName: string;
     email: string;
   };
+  comments?: IncidentComment[];
   aiFixEligible: boolean;
   aiFixStatus?: 'not_started' | 'analyzing' | 'patch_ready' | 'tested' | 'applied' | 'failed';
   aiRepairRunId?: string;

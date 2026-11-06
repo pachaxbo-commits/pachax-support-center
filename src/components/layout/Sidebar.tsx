@@ -47,7 +47,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
       alert: true,
     },
     {
-      to: '/client/feature-request',
+      to: '/client/request-feature',
       label: 'Solicitud de Cambios',
       icon: PlusCircle,
     },

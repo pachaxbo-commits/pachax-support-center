@@ -1,11 +1,11 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import {
-  UserProfile,
   UserRole,
+  UserProfile,
   UserPermissions,
   getDefaultPermissions,
-  ROLE_LABELS
 } from '@/models/auth';
+import { DEMO_USERS } from '@/lib/demoData';
 import { auth, db, isFirebaseConfigured } from '@/lib/firebase';
 import {
   onAuthStateChanged,
@@ -16,182 +16,309 @@ import {
   User as FirebaseUser,
 } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
-import { DEMO_USERS } from '@/lib/demoData';
 
-interface AuthContextType {
+export type ProfileStatus = 'loading' | 'ready' | 'unauthenticated' | 'missing_profile' | 'suspended' | 'error';
+
+interface AuthContextValue {
   currentUser: UserProfile | null;
   firebaseUser: FirebaseUser | null;
-  role: UserRole | null;
   permissions: UserPermissions;
   isLoading: boolean;
   isDemoMode: boolean;
-  isSuperAdmin: boolean;
-  isDevStaff: boolean;
-  isClientUser: boolean;
-  login: (email: string, pass: string) => Promise<void>;
+  profileStatus: ProfileStatus;
+  authError: string | null;
+  login: (email: string, password?: string) => Promise<UserProfile>;
   logout: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   sendVerificationEmail: () => Promise<void>;
   reloadUser: () => Promise<void>;
   switchDemoRole: (role: UserRole) => void;
-  hasPermission: (key: keyof UserPermissions) => boolean;
+  role: UserRole | null;
+  isClientRole: boolean;
+  isDevStaff: boolean;
+  isSuperAdmin: boolean;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const EMPTY_PERMISSIONS: UserPermissions = {
+  canReportCritical: false,
+  canReportGeneral: false,
+  canRequestChanges: false,
+  canApproveQuotes: false,
+  canManageClientUsers: false,
+  canViewAllClients: false,
+  canManageDevStaff: false,
+  canTriggerAiRepair: false,
+  canPublishToProd: false,
+  canManageIntegrations: false,
+  canViewAuditLogs: false,
+};
+
+export function isSandboxDemoEnabled(): boolean {
+  return import.meta.env.VITE_APP_MODE === 'demo' && !import.meta.env.PROD;
+}
+
+const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
-    // Check if demo user saved
-    const savedRole = localStorage.getItem('pachax_demo_role') as UserRole | null;
-    if (savedRole && DEMO_USERS[savedRole]) {
-      return DEMO_USERS[savedRole];
-    }
-    return DEMO_USERS.client_admin; // Default demo role: Client Admin for immediate preview
-  });
+  const sandboxAllowed = isSandboxDemoEnabled() || (!isFirebaseConfigured() && !import.meta.env.PROD);
 
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isDemoMode, setIsDemoMode] = useState<boolean>(!isFirebaseConfigured() || import.meta.env.VITE_APP_MODE === 'demo');
+  const [isDemoMode, setIsDemoMode] = useState<boolean>(sandboxAllowed && !isFirebaseConfigured());
+  const [profileStatus, setProfileStatus] = useState<ProfileStatus>('loading');
+  const [authError, setAuthError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!isFirebaseConfigured() || !auth) {
-      setIsDemoMode(true);
-      setIsLoading(false);
-      return;
+  const resolveFirebaseProfile = useCallback(async (user: FirebaseUser, forceRefreshToken = false): Promise<UserProfile> => {
+    if (!db) {
+      throw new Error('Base de datos Firestore no inicializada.');
     }
 
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setFirebaseUser(user);
-      if (user && db) {
-        try {
-          const userDoc = await getDoc(doc(db, 'users', user.uid));
-          if (userDoc.exists()) {
-            const data = userDoc.data() as UserProfile;
-            setCurrentUser(data);
-            setIsDemoMode(false);
-          } else {
-            // User authenticated in Firebase but profile doc not yet created
-            setCurrentUser({
-              uid: user.uid,
-              email: user.email || '',
-              displayName: user.displayName || user.email?.split('@')[0] || 'Usuario',
-              role: 'client_user',
-              status: 'active',
-              createdAt: new Date().toISOString(),
-            });
-            setIsDemoMode(false);
-          }
-        } catch (err) {
-          console.error('[AuthContext] Error fetching user profile:', err);
-        }
-      } else {
-        // Fall back to demo mode if no active firebase session
-        const savedRole = (localStorage.getItem('pachax_demo_role') as UserRole) || 'client_admin';
-        setCurrentUser(DEMO_USERS[savedRole] || DEMO_USERS.client_admin);
-        setIsDemoMode(true);
-      }
-      setIsLoading(false);
-    });
+    const tokenResult = await user.getIdTokenResult(forceRefreshToken);
+    const claims = tokenResult.claims;
 
-    return () => unsubscribe();
+    const userDocRef = doc(db, 'users', user.uid);
+    const userDoc = await getDoc(userDocRef);
+
+    if (!userDoc.exists()) {
+      setProfileStatus('missing_profile');
+      setCurrentUser(null);
+      throw new Error('PROFILE_NOT_CONFIGURED: Tu cuenta está autenticada pero aún no tiene un perfil operativo asignado en PACHAX Support Center.');
+    }
+
+    const data = userDoc.data() as UserProfile;
+
+    if (data.status === 'suspended') {
+      setProfileStatus('suspended');
+      setCurrentUser(null);
+      throw new Error('ACCOUNT_SUSPENDED: Esta cuenta ha sido suspendida por administración.');
+    }
+
+    const validRoles: UserRole[] = [
+      'superadmin',
+      'dev_owner',
+      'dev_admin',
+      'dev_engineer',
+      'dev_commercial',
+      'client_admin',
+      'client_user',
+    ];
+
+    const resolvedRole = (claims.role && validRoles.includes(claims.role as UserRole))
+      ? (claims.role as UserRole)
+      : data.role;
+
+    if (!resolvedRole || !validRoles.includes(resolvedRole)) {
+      setProfileStatus('missing_profile');
+      setCurrentUser(null);
+      throw new Error('INVALID_ROLE: El perfil del usuario no posee un rol válido.');
+    }
+
+    const resolvedProfile: UserProfile = {
+      ...data,
+      uid: user.uid,
+      email: user.email || data.email,
+      displayName: data.displayName || user.displayName || user.email?.split('@')[0] || 'Usuario',
+      role: resolvedRole,
+      developerCompanyId: (claims.developerCompanyId as string | undefined) || data.developerCompanyId,
+      clientCompanyId: (claims.clientCompanyId as string | undefined) || data.clientCompanyId,
+      status: data.status || 'active',
+    };
+
+    setCurrentUser(resolvedProfile);
+    setProfileStatus('ready');
+    setAuthError(null);
+    return resolvedProfile;
   }, []);
 
-  const role = currentUser?.role || null;
-  const permissions = role ? getDefaultPermissions(role) : getDefaultPermissions('client_user');
-
-  const isSuperAdmin = role === 'superadmin';
-  const isDevStaff = ['superadmin', 'dev_owner', 'dev_admin', 'dev_engineer', 'dev_commercial'].includes(role || '');
-  const isClientUser = ['client_admin', 'client_user'].includes(role || '');
-
-  const hasPermission = (key: keyof UserPermissions): boolean => {
-    if (!role) return false;
-    return permissions[key] ?? false;
-  };
-
-  const login = async (email: string, pass: string) => {
-    if (isFirebaseConfigured() && auth) {
-      await signInWithEmailAndPassword(auth, email, pass);
-    } else {
-      // Demo login
-      const matched = Object.values(DEMO_USERS).find((u) => u.email.toLowerCase() === email.toLowerCase());
-      if (matched) {
-        setCurrentUser(matched);
-        localStorage.setItem('pachax_demo_role', matched.role);
-      } else {
-        throw new Error('Credenciales inválidas en modo demo. Usa una de las cuentas sugeridas.');
+  useEffect(() => {
+    // Clean up any legacy demo localStorage key in production/live mode
+    if (!sandboxAllowed) {
+      try {
+        localStorage.removeItem('pachax_demo_role');
+      } catch {
+        // ignore storage errors
       }
+    }
+
+    if (isFirebaseConfigured() && auth) {
+      const unsubscribe = onAuthStateChanged(auth, async (user) => {
+        setFirebaseUser(user);
+        if (user) {
+          setIsDemoMode(false);
+          setIsLoading(true);
+          try {
+            await resolveFirebaseProfile(user, false);
+          } catch (err: any) {
+            const msg = err?.message || 'Error al verificar el perfil del usuario en Firestore.';
+            if (!msg.startsWith('PROFILE_NOT_CONFIGURED') && !msg.startsWith('ACCOUNT_SUSPENDED') && !msg.startsWith('INVALID_ROLE')) {
+              setProfileStatus('error');
+            }
+            setAuthError(msg);
+            setCurrentUser(null);
+          } finally {
+            setIsLoading(false);
+          }
+        } else {
+          // Unauthenticated in Firebase
+          if (sandboxAllowed && import.meta.env.VITE_APP_MODE === 'demo') {
+            const savedRole = localStorage.getItem('pachax_demo_role') as UserRole | null;
+            const demoUser = (savedRole && DEMO_USERS[savedRole]) ? DEMO_USERS[savedRole] : DEMO_USERS.client_admin;
+            setCurrentUser(demoUser);
+            setIsDemoMode(true);
+            setProfileStatus('ready');
+            setAuthError(null);
+          } else {
+            setCurrentUser(null);
+            setIsDemoMode(false);
+            setProfileStatus('unauthenticated');
+            setAuthError(null);
+          }
+          setIsLoading(false);
+        }
+      });
+      return () => unsubscribe();
+    } else if (sandboxAllowed) {
+      const savedRole = localStorage.getItem('pachax_demo_role') as UserRole | null;
+      const demoUser = (savedRole && DEMO_USERS[savedRole]) ? DEMO_USERS[savedRole] : DEMO_USERS.client_admin;
+      setCurrentUser(demoUser);
+      setIsDemoMode(true);
+      setProfileStatus('ready');
+      setIsLoading(false);
+    } else {
+      setCurrentUser(null);
+      setIsDemoMode(false);
+      setProfileStatus('error');
+      setAuthError('Configuración de Firebase ausente en entorno de producción.');
+      setIsLoading(false);
+    }
+  }, [sandboxAllowed, resolveFirebaseProfile]);
+
+  const login = async (email: string, password?: string): Promise<UserProfile> => {
+    setIsLoading(true);
+    setAuthError(null);
+    try {
+      if (isFirebaseConfigured() && auth && password) {
+        const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
+        setFirebaseUser(cred.user);
+        setIsDemoMode(false);
+        const profile = await resolveFirebaseProfile(cred.user, true);
+        return profile;
+      }
+
+      if (sandboxAllowed) {
+        const matchedDemo = Object.values(DEMO_USERS).find(
+          (u) => u.email.toLowerCase() === email.toLowerCase().trim()
+        );
+        if (matchedDemo) {
+          setCurrentUser(matchedDemo);
+          setIsDemoMode(true);
+          setProfileStatus('ready');
+          localStorage.setItem('pachax_demo_role', matchedDemo.role);
+          return matchedDemo;
+        }
+      }
+
+      throw new Error('Credenciales inválidas o contraseña requerida.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const logout = async () => {
-    if (isFirebaseConfigured() && auth) {
-      await firebaseSignOut(auth);
+    setIsLoading(true);
+    try {
+      if (!sandboxAllowed) {
+        localStorage.removeItem('pachax_demo_role');
+      }
+      if (isFirebaseConfigured() && auth) {
+        await firebaseSignOut(auth);
+      }
+      setCurrentUser(null);
+      setFirebaseUser(null);
+      setProfileStatus('unauthenticated');
+      setAuthError(null);
+    } finally {
+      setIsLoading(false);
     }
-    // In demo, revert to client_user or null
-    setCurrentUser(null);
-    localStorage.removeItem('pachax_demo_role');
   };
 
   const resetPassword = async (email: string) => {
     if (isFirebaseConfigured() && auth) {
-      await sendPasswordResetEmail(auth, email);
-    } else {
-      // Demo feedback
-      console.log(`[Demo Auth] Password reset link simulated for ${email}`);
+      await sendPasswordResetEmail(auth, email.trim());
+    } else if (!sandboxAllowed) {
+      throw new Error('El servicio de autenticación no está disponible.');
     }
   };
 
   const sendVerificationEmail = async () => {
     if (isFirebaseConfigured() && auth && auth.currentUser) {
-      await sendEmailVerification(auth.currentUser, {
-        url: `${window.location.origin}/login`,
-        handleCodeInApp: false,
-      });
+      await sendEmailVerification(auth.currentUser);
     } else {
-      throw new Error('No hay una sesión activa en Firebase para enviar la verificación.');
+      throw new Error('No hay una sesión activa de Firebase para enviar la verificación.');
     }
   };
 
   const reloadUser = async () => {
     if (isFirebaseConfigured() && auth && auth.currentUser) {
       await auth.currentUser.reload();
-      setFirebaseUser(auth.currentUser);
+      const updated = auth.currentUser;
+      setFirebaseUser({ ...updated } as FirebaseUser);
+      await resolveFirebaseProfile(updated, true);
     }
   };
 
   const switchDemoRole = (newRole: UserRole) => {
-    const demoProfile = DEMO_USERS[newRole] || {
-      uid: `demo-${newRole}`,
-      email: `${newRole}@pachax.bo`,
-      displayName: ROLE_LABELS[newRole],
-      role: newRole,
-      developerCompanyId: 'dev-pachax-core',
-      status: 'active',
-      createdAt: new Date().toISOString(),
-    };
-    setCurrentUser(demoProfile);
-    localStorage.setItem('pachax_demo_role', newRole);
+    if (!sandboxAllowed) {
+      console.warn('[Security] switchDemoRole está deshabilitado fuera del modo demo.');
+      return;
+    }
+    const targetUser = DEMO_USERS[newRole];
+    if (targetUser) {
+      setCurrentUser(targetUser);
+      setIsDemoMode(true);
+      setProfileStatus('ready');
+      localStorage.setItem('pachax_demo_role', newRole);
+    }
   };
+
+  const role: UserRole | null = currentUser ? currentUser.role : null;
+  const permissions: UserPermissions = currentUser
+    ? {
+        ...getDefaultPermissions(currentUser.role),
+        ...(currentUser.permissionsOverride || {}),
+      }
+    : EMPTY_PERMISSIONS;
+
+  const isClientRole = role === 'client_admin' || role === 'client_user';
+  const isDevStaff =
+    role === 'superadmin' ||
+    role === 'dev_owner' ||
+    role === 'dev_admin' ||
+    role === 'dev_engineer' ||
+    role === 'dev_commercial';
+  const isSuperAdmin = role === 'superadmin';
 
   return (
     <AuthContext.Provider
       value={{
         currentUser,
         firebaseUser,
-        role,
         permissions,
         isLoading,
         isDemoMode,
-        isSuperAdmin,
-        isDevStaff,
-        isClientUser,
+        profileStatus,
+        authError,
         login,
         logout,
         resetPassword,
         sendVerificationEmail,
         reloadUser,
         switchDemoRole,
-        hasPermission,
+        role,
+        isClientRole,
+        isDevStaff,
+        isSuperAdmin,
       }}
     >
       {children}
@@ -199,10 +326,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 };
 
-export function useAuth() {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
+export function useAuth(): AuthContextValue {
+  const ctx = useContext(AuthContext);
+  if (!ctx) {
+    throw new Error('useAuth debe utilizarse dentro de un AuthProvider');
   }
-  return context;
+  return ctx;
 }

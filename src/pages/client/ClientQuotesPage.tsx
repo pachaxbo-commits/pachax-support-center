@@ -61,10 +61,14 @@ export const ClientQuotesPage: React.FC = () => {
       return;
     }
     try {
-      await api.rejectQuote(rejectingQuote.id, rejectionReason, {
-        uid: currentUser?.uid || 'user-unknown',
-        displayName: currentUser?.displayName || 'Administrador',
-      });
+      await api.rejectQuote(
+        rejectingQuote.id,
+        {
+          uid: currentUser?.uid || 'user-unknown',
+          displayName: currentUser?.displayName || 'Administrador',
+        },
+        rejectionReason
+      );
       setActionSuccessMessage(`Presupuesto "${rejectingQuote.title}" registrado como no aprobado.`);
       setRejectingQuote(null);
       setRejectionReason('');

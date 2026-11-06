@@ -116,12 +116,15 @@ export const ReportCriticalIncidentPage: React.FC = () => {
     setIsSubmitting(true);
     try {
       const selectedProj = projects.find((p) => p.id === selectedProjectId);
+      if (!selectedProj) {
+        throw new Error('Debes seleccionar un proyecto válido antes de reportar una incidencia crítica.');
+      }
 
       await api.createIncidentReport({
-        clientCompanyId: currentUser?.clientCompanyId || 'client-sanjose',
-        developerCompanyId: selectedProj?.developerCompanyId || 'dev-pachax-core',
+        clientCompanyId: selectedProj.clientCompanyId,
+        developerCompanyId: selectedProj.developerCompanyId || 'dev-pachax-core',
         projectId: selectedProjectId,
-        projectName: selectedProj?.name,
+        projectName: selectedProj.name,
         reportedBy: {
           uid: currentUser?.uid || 'user-unknown',
           displayName: currentUser?.displayName || 'Usuario',
@@ -130,6 +133,7 @@ export const ReportCriticalIncidentPage: React.FC = () => {
         category: 'critical',
         title: `[CRÍTICO] ${title}`,
         criticalJustification: justification,
+        emergencyPhone,
         items: [
           {
             title: title,

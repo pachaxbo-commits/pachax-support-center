@@ -1,370 +1,234 @@
-import React, { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   Cpu,
   GitBranch,
   GitPullRequest,
-  CheckCircle2,
-  AlertCircle,
-  Play,
-  RotateCw,
+  ShieldCheck,
   Terminal,
-  Shield,
-  Layers,
-  ArrowRight,
-  ExternalLink,
-  Sparkles,
-  Zap,
-  Sliders
+  RefreshCw,
+  AlertTriangle,
+  Lock,
 } from 'lucide-react';
-import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
-import { AiRepairRun, AiRepairMode, AiRepairStage } from '@/models/aiRepair';
-import { IncidentItem } from '@/models/incident';
+import { useAuth } from '@/context/AuthContext';
+import { AiRepairRun, AiRepairStage } from '@/models/aiRepair';
+import { Badge } from '@/components/common/Badge';
 import { formatDate } from '@/lib/utils';
 
+const STAGE_LABELS: Record<AiRepairStage, string> = {
+  queued: 'En Cola',
+  inspecting_repository: 'Inspeccionando Repositorio',
+  diagnosing_root_cause: 'Diagnosticando Causa Raíz',
+  generating_patch: 'Generando Parche de Código',
+  running_test_suite: 'Ejecutando Suite de Tests',
+  retrying_corrections: 'Reintentando Corrección',
+  creating_pull_request: 'Abriendo Pull Request',
+  canary_deploying: 'Despliegue Canary',
+  completed: 'Completado y Validado',
+  failed: 'Falló Validación',
+};
+
 export const AiRepairCenterPage: React.FC = () => {
-  const { currentUser, role } = useAuth();
-  const [searchParams] = useSearchParams();
-  const queryItemId = searchParams.get('itemId');
+  const { currentUser } = useAuth();
+  const devCompanyId = currentUser?.developerCompanyId || 'dev-pachax-core';
 
   const [runs, setRuns] = useState<AiRepairRun[]>([]);
-  const [incidents, setIncidents] = useState<IncidentItem[]>([]);
   const [selectedRun, setSelectedRun] = useState<AiRepairRun | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // New repair trigger form
-  const [targetItemId, setTargetItemId] = useState<string>(queryItemId || '');
-  const [selectedMode, setSelectedMode] = useState<AiRepairMode>('delegated');
-  const [selectedEngine, setSelectedEngine] = useState<'codex-sdk' | 'claude-agent-sdk'>('claude-agent-sdk');
-  const [isTriggering, setIsTriggering] = useState<boolean>(false);
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const rData = await api.getAiRepairRuns(devCompanyId);
+      setRuns(rData);
+      if (rData.length > 0 && !selectedRun) {
+        setSelectedRun(rData[0]);
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Error al consultar ejecuciones en Firestore.');
+    } finally {
+      setLoading(false);
+    }
+  }, [devCompanyId, selectedRun]);
 
   useEffect(() => {
-    async function load() {
-      const [r, items] = await Promise.all([
-        api.getAiRepairRuns(),
-        api.getIncidentItems(),
-      ]);
-      setRuns(r);
-      setIncidents(items);
-      if (r.length > 0) {
-        setSelectedRun(r[0]);
-      }
-      if (queryItemId) {
-        setTargetItemId(queryItemId);
-      } else if (items.length > 0) {
-        setTargetItemId(items[0].id);
-      }
-    }
-    load();
-  }, [queryItemId]);
-
-  const handleLaunchAiRepair = async () => {
-    if (!targetItemId) {
-      alert('Selecciona una incidencia objetivo.');
-      return;
-    }
-
-    setIsTriggering(true);
-    try {
-      const newRun = await api.triggerAiRepair(targetItemId, selectedMode, {
-        uid: currentUser?.uid || 'user-admin',
-        displayName: currentUser?.displayName || 'Administrador',
-      });
-
-      const updatedRuns = await api.getAiRepairRuns();
-      setRuns(updatedRuns);
-      setSelectedRun(newRun);
-    } catch (err) {
-      alert('Error al lanzar ejecución de IA.');
-    } finally {
-      setIsTriggering(false);
-    }
-  };
-
-  const STAGES_PIPELINE: { stage: AiRepairStage; label: string }[] = [
-    { stage: 'queued', label: '1. En Cola' },
-    { stage: 'inspecting_repository', label: '2. Inspección Repo' },
-    { stage: 'diagnosing_root_cause', label: '3. Diagnóstico' },
-    { stage: 'generating_patch', label: '4. Parche AST' },
-    { stage: 'running_test_suite', label: '5. Pruebas' },
-    { stage: 'creating_pull_request', label: '6. Pull Request' },
-    { stage: 'completed', label: '7. Finalizado' },
-  ];
+    loadData();
+  }, [loadData]);
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="bg-gradient-to-r from-purple-900 via-indigo-900 to-slate-900 rounded-2xl p-6 sm:p-8 text-white shadow-xl relative overflow-hidden">
-        <div className="relative z-10 max-w-3xl">
-          <div className="flex items-center gap-2 mb-2">
-            <span className="p-2 bg-purple-500/30 rounded-xl text-purple-300">
-              <Cpu className="w-5 h-5 animate-pulse" />
-            </span>
-            <span className="text-xs font-bold uppercase tracking-wider text-purple-300">
-              Arquitectura de Corrección Automatizada
-            </span>
-          </div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-            Centro de Agentes de IA & Reparación de Software
-          </h1>
-          <p className="text-slate-300 text-xs sm:text-sm mt-2 leading-relaxed">
-            Orquesta agentes de Codex SDK y Claude Agent SDK para analizar el error, clonar el repositorio GitHub autorizado, sintetizar el parche y ejecutar la suite de pruebas sin riesgo.
-          </p>
-
-          <div className="mt-4 flex flex-wrap gap-3 text-xs">
-            <span className="bg-white/10 px-3 py-1 rounded-lg backdrop-blur-sm border border-white/10 flex items-center gap-1.5 font-medium">
-              <Shield className="w-3.5 h-3.5 text-purple-300" />
-              Sandbox de Ejecución Aislada
-            </span>
-            <span className="bg-white/10 px-3 py-1 rounded-lg backdrop-blur-sm border border-white/10 flex items-center gap-1.5 font-medium">
-              <GitPullRequest className="w-3.5 h-3.5 text-purple-300" />
-              GitHub PR Gate Obligatorio
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Safety Notice: Controlled Phase */}
-      <div className="p-4 bg-purple-50/80 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800/80 rounded-xl flex items-start gap-3">
-        <Shield className="w-5 h-5 text-purple-600 dark:text-purple-400 shrink-0 mt-0.5" />
-        <div className="text-xs text-purple-900 dark:text-purple-200 leading-relaxed">
-          <strong>Seguridad Operativa — Fase de Integración Controlada:</strong> Los despliegues automáticos directos a producción sin supervisión humana permanecen <strong>inhabilitados</strong>. Todos los trabajos orquestados por el agente preparan un diagnóstico técnico, generan la rama de trabajo y abren un Pull Request en GitHub para revisión y aprobación previa del equipo técnico de PACHAX.
-        </div>
-      </div>
-
-      {/* 3 Modes Overview Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div
-          onClick={() => setSelectedMode('manual')}
-          className={`p-4 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
-            selectedMode === 'manual'
-              ? 'bg-purple-50 dark:bg-purple-950/40 border-purple-500 ring-2 ring-purple-500/30'
-              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
-          }`}
-        >
+      <div className="bg-gradient-to-r from-purple-950 via-slate-900 to-slate-900 text-white p-6 rounded-2xl border border-purple-500/30 shadow-xl">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
-            <span className="text-xs font-bold uppercase text-slate-500 tracking-wider">Modo 1</span>
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white mt-1">Manual Supervisado</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              El agente elabora el diagnóstico y genera el parche diff. El propietario debe autorizar explícitamente cada commit antes de aplicar.
+            <div className="flex items-center gap-2">
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
+                <Lock className="w-3 h-3" />
+                Fase 3 — Pendiente de Activación
+              </span>
+              <span className="text-xs text-slate-400">
+                • Sin ejecuciones simuladas en producción
+              </span>
+            </div>
+            <h1 className="text-2xl font-bold mt-1.5">
+              Centro de Reparación Autónoma con IA
+            </h1>
+            <p className="text-xs sm:text-sm text-slate-300 mt-1 max-w-2xl">
+              Integración planificada con OpenAI Codex SDK y Claude Agent SDK para diagnóstico de repositorios y creación de Pull Requests verificados.
             </p>
           </div>
-          <span className="text-[11px] font-semibold text-purple-600 dark:text-purple-400 mt-3 block">
-            Riesgo cero • Control absoluto
-          </span>
-        </div>
-
-        <div
-          onClick={() => setSelectedMode('delegated')}
-          className={`p-4 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
-            selectedMode === 'delegated'
-              ? 'bg-purple-50 dark:bg-purple-950/40 border-purple-500 ring-2 ring-purple-500/30'
-              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
-          }`}
-        >
-          <div>
-            <span className="text-xs font-bold uppercase text-slate-500 tracking-wider">Modo 2 (Recomendado)</span>
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white mt-1">Delegado con PR</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              El agente clona la rama, aplica la corrección, ejecuta los tests unitarios y abre un Pull Request en GitHub para revisión del equipo.
-            </p>
-          </div>
-          <span className="text-[11px] font-semibold text-purple-600 dark:text-purple-400 mt-3 block">
-            Automatizado • Revisión por PR
-          </span>
-        </div>
-
-        <div
-          onClick={() => setSelectedMode('autonomous_authorized')}
-          className={`p-4 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
-            selectedMode === 'autonomous_authorized'
-              ? 'bg-purple-50 dark:bg-purple-950/40 border-purple-500 ring-2 ring-purple-500/30'
-              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
-          }`}
-        >
-          <div>
-            <span className="text-xs font-bold uppercase text-slate-500 tracking-wider">Modo 3</span>
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white mt-1">Autónomo Autorizado</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              Para fallas críticas de alto impacto con suite de pruebas al 100%. Mezcla a rama principal y dispara el despliegue automático.
-            </p>
-          </div>
-          <span className="text-[11px] font-semibold text-rose-600 dark:text-rose-400 mt-3 block">
-            Requiere token privilegiado
-          </span>
-        </div>
-      </div>
-
-      {/* Trigger Form */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
-        <h2 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
-          <Zap className="w-4 h-4 text-purple-500" />
-          <span>Disparar Nueva Reparación con IA</span>
-        </h2>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="md:col-span-2">
-            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-              Incidencia Objetivo *
-            </label>
-            <select
-              value={targetItemId}
-              onChange={(e) => setTargetItemId(e.target.value)}
-              className="w-full text-xs sm:text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-purple-500"
-            >
-              {incidents.map((it) => (
-                <option key={it.id} value={it.id}>
-                  [{it.id}] {it.title} ({it.moduleAffected})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-              Motor del Agente
-            </label>
-            <select
-              value={selectedEngine}
-              onChange={(e) => setSelectedEngine(e.target.value as any)}
-              className="w-full text-xs sm:text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white outline-none"
-            >
-              <option value="claude-agent-sdk">Claude Agent SDK (Recomendado)</option>
-              <option value="codex-sdk">Codex SDK (GitHub / OpenAI)</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between pt-2">
-          <span className="text-xs text-slate-400">
-            Modo activo: <strong className="text-purple-600 dark:text-purple-400 uppercase">{selectedMode}</strong>
-          </span>
 
           <button
-            onClick={handleLaunchAiRepair}
-            disabled={isTriggering}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold text-white bg-purple-600 hover:bg-purple-500 disabled:opacity-50 shadow-md shadow-purple-600/30 transition"
+            type="button"
+            onClick={loadData}
+            disabled={loading}
+            className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition flex items-center gap-1.5 self-start"
           >
-            {isTriggering ? (
-              <>
-                <RotateCw className="w-4 h-4 animate-spin" />
-                <span>Encolando agente...</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-4 h-4 fill-white" />
-                <span>Ejecutar Reparación con IA</span>
-              </>
-            )}
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>Consultar Firestore</span>
           </button>
         </div>
       </div>
 
-      {/* Active Run Monitor & Live Terminal */}
-      {selectedRun && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-xs font-bold text-purple-600 dark:text-purple-400">
-                  {selectedRun.id}
-                </span>
-                <span className="text-xs font-semibold px-2 py-0.5 rounded bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300">
-                  {selectedRun.agentEngine}
-                </span>
-              </div>
-              <h2 className="text-base font-bold text-slate-900 dark:text-white mt-1">
-                Monitoreo en Tiempo Real: {selectedRun.branchName}
+      {/* Phase 3 Notice Banner */}
+      <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/60 flex items-start gap-3">
+        <ShieldCheck className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+        <div className="text-xs text-amber-900 dark:text-amber-200 space-y-1">
+          <p className="font-bold">
+            Estado Real del Motor de Agentes Autónomos (Fase 3):
+          </p>
+          <p className="text-amber-800/90 dark:text-amber-300/90 leading-relaxed">
+            Por política de seguridad e integridad operativa, la generación de ejecuciones simuladas en memoria ha sido deshabilitada definitivamente. Esta vista consulta directamente la colección <code className="font-mono bg-amber-100 dark:bg-amber-900/50 px-1 rounded">aiRepairRuns</code> de Firestore ({runs.length} registros reales). La activación de los runners de Codex SDK y Claude Agent SDK se realizará en la Fase 3.
+          </p>
+        </div>
+      </div>
+
+      {error && (
+        <div className="p-4 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-xs text-rose-700 dark:text-rose-300 flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="p-12 text-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800">
+          <RefreshCw className="w-6 h-6 text-purple-500 animate-spin mx-auto mb-2" />
+          <p className="text-xs text-slate-500">Consultando colección aiRepairRuns en Firestore...</p>
+        </div>
+      ) : runs.length === 0 ? (
+        <div className="p-12 text-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
+          <div className="w-12 h-12 rounded-2xl bg-purple-50 dark:bg-purple-950/50 text-purple-600 dark:text-purple-400 flex items-center justify-center mx-auto">
+            <Cpu className="w-6 h-6" />
+          </div>
+          <h3 className="text-base font-bold text-slate-900 dark:text-white">
+            0 Ejecuciones de Reparación con IA en Firestore
+          </h3>
+          <p className="text-xs text-slate-500 max-w-md mx-auto">
+            No existen registros en <code className="font-mono">aiRepairRuns</code>. Cuando se habiliten los agentes autónomos en la Fase 3, podrás auditar aquí cada rama, diff y resultado de tests.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+            <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Terminal className="w-4 h-4 text-purple-500" />
+                <span>Historial Real ({runs.length})</span>
               </h2>
             </div>
 
-            <div className="text-xs text-slate-400">
-              Iniciado por: {selectedRun.triggeredBy.displayName} ({formatDate(selectedRun.createdAt)})
-            </div>
-          </div>
-
-          {/* Pipeline Stages Stepper */}
-          <div className="overflow-x-auto pb-2">
-            <div className="flex items-center justify-between min-w-[600px] gap-2">
-              {STAGES_PIPELINE.map((st, idx) => {
-                const isCurrent = selectedRun.stage === st.stage;
+            <div className="divide-y divide-slate-100 dark:divide-slate-800">
+              {runs.map((run) => {
+                const isSelected = selectedRun?.id === run.id;
                 return (
-                  <div key={st.stage} className="flex-1 flex flex-col items-center text-center">
-                    <div
-                      className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition ${
-                        isCurrent
-                          ? 'bg-purple-600 text-white ring-4 ring-purple-500/20 animate-pulse'
-                          : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
-                      }`}
-                    >
-                      {idx + 1}
+                  <button
+                    key={run.id}
+                    onClick={() => setSelectedRun(run)}
+                    className={`w-full text-left p-4 transition space-y-2 ${
+                      isSelected
+                        ? 'bg-purple-50/70 dark:bg-purple-950/30 border-l-4 border-purple-500'
+                        : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono font-bold text-purple-600 dark:text-purple-400">
+                        {run.id}
+                      </span>
+                      <Badge
+                        variant={
+                          run.stage === 'completed'
+                            ? 'success'
+                            : run.stage === 'failed'
+                            ? 'danger'
+                            : 'purple'
+                        }
+                      >
+                        {STAGE_LABELS[run.stage]}
+                      </Badge>
                     </div>
-                    <span className="text-[11px] font-semibold mt-1 text-slate-700 dark:text-slate-300">
-                      {st.label}
-                    </span>
-                  </div>
+                    <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">
+                      Rama: {run.branchName}
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] text-slate-400">
+                      <span>Motor: {run.agentEngine}</span>
+                      <span>{formatDate(run.createdAt)}</span>
+                    </div>
+                  </button>
                 );
               })}
             </div>
           </div>
 
-          {/* Terminal Logs Viewer */}
-          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-300 shadow-inner space-y-2 max-h-64 overflow-y-auto">
-            <div className="flex items-center justify-between text-slate-500 text-[11px] border-b border-slate-800/80 pb-2">
-              <span className="flex items-center gap-1.5">
-                <Terminal className="w-3.5 h-3.5 text-purple-400" />
-                <span>Console Output — Agent Execution Sandboxed</span>
-              </span>
-              <span>stdout / stderr</span>
-            </div>
+          <div className="lg:col-span-2">
+            {selectedRun && (
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-4">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-slate-900 dark:text-white">
+                        Ejecución #{selectedRun.id}
+                      </span>
+                      <Badge variant="purple">{selectedRun.mode.toUpperCase()}</Badge>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-slate-500 mt-1">
+                      <span className="flex items-center gap-1 font-mono">
+                        <GitBranch className="w-3.5 h-3.5 text-brand-500" />
+                        {selectedRun.branchName}
+                      </span>
+                      {selectedRun.pullRequestUrl && (
+                        <a
+                          href={selectedRun.pullRequestUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center gap-1 text-brand-600 dark:text-brand-400 font-semibold hover:underline"
+                        >
+                          <GitPullRequest className="w-3.5 h-3.5" />
+                          PR #{selectedRun.pullRequestNumber}
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </div>
 
-            {selectedRun.logs.map((log) => (
-              <div key={log.id} className="leading-relaxed">
-                <span className="text-slate-500">[{log.timestamp.slice(11, 19)}]</span>{' '}
-                <span
-                  className={
-                    log.severity === 'warning'
-                      ? 'text-amber-400 font-semibold'
-                      : log.severity === 'error'
-                      ? 'text-rose-400 font-bold'
-                      : log.severity === 'success'
-                      ? 'text-emerald-400 font-bold'
-                      : 'text-purple-300'
-                  }
-                >
-                  [{log.stage}]
-                </span>{' '}
-                <span>{log.message}</span>
+                <div className="bg-slate-950 text-slate-200 rounded-xl p-4 font-mono text-xs space-y-3 max-h-[420px] overflow-y-auto border border-slate-800">
+                  {selectedRun.logs.map((log) => (
+                    <div key={log.id} className="space-y-1.5 border-l-2 border-slate-800 pl-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-slate-500">
+                          {new Date(log.timestamp).toLocaleTimeString()}
+                        </span>
+                        <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
+                          {log.stage}
+                        </span>
+                      </div>
+                      <p className="text-slate-200">{log.message}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))}
-          </div>
-
-          {/* Files modified & PR info */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-            <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700">
-              <span className="font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                Archivos Afectados por el Parche:
-              </span>
-              <ul className="list-disc list-inside space-y-0.5 text-slate-500 dark:text-slate-400 font-mono">
-                {selectedRun.filesModified.map((f) => (
-                  <li key={f}>{f}</li>
-                ))}
-              </ul>
-            </div>
-
-            <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 flex flex-col justify-between">
-              <div>
-                <span className="font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                  Rama de Trabajo Aislada:
-                </span>
-                <span className="font-mono text-purple-600 dark:text-purple-400">
-                  {selectedRun.branchName}
-                </span>
-              </div>
-              <div className="mt-2 text-[11px] text-slate-400">
-                Límite de reintentos configurado: {selectedRun.maxRetries}
-              </div>
-            </div>
+            )}
           </div>
         </div>
       )}

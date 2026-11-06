@@ -1,12 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { ShieldCheck, Lock, Mail, ArrowRight, Sparkles, AlertCircle } from 'lucide-react';
-import { useAuth } from '@/context/AuthContext';
+import { Lock, Mail, ArrowRight, Sparkles, AlertCircle } from 'lucide-react';
+import { useAuth, isSandboxDemoEnabled } from '@/context/AuthContext';
 import { DEMO_USERS } from '@/lib/demoData';
-import { UserRole, ROLE_LABELS } from '@/models/auth';
+import { UserRole } from '@/models/auth';
 
 export const LoginPage: React.FC = () => {
-  const { login, isDemoMode, switchDemoRole } = useAuth();
+  const { login, currentUser, isDevStaff, switchDemoRole } = useAuth();
   const navigate = useNavigate();
 
   const [email, setEmail] = useState('');
@@ -14,14 +14,30 @@ export const LoginPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // If user is already authenticated with a resolved profile, redirect appropriately
+  useEffect(() => {
+    if (currentUser) {
+      if (isDevStaff) {
+        navigate('/admin/dashboard', { replace: true });
+      } else {
+        navigate('/client/dashboard', { replace: true });
+      }
+    }
+  }, [currentUser, isDevStaff, navigate]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
 
     try {
-      await login(email, password);
-      navigate('/client/dashboard');
+      const profile = await login(email, password);
+      const staffRoles: UserRole[] = ['superadmin', 'dev_owner', 'dev_admin', 'dev_engineer', 'dev_commercial'];
+      if (staffRoles.includes(profile.role)) {
+        navigate('/admin/dashboard', { replace: true });
+      } else {
+        navigate('/client/dashboard', { replace: true });
+      }
     } catch (err: any) {
       const code = err?.code ? `[${err.code}] ` : '';
       setError(`${code}${err?.message || 'Error al iniciar sesión. Revisa tus credenciales.'}`);
@@ -31,6 +47,7 @@ export const LoginPage: React.FC = () => {
   };
 
   const handleQuickDemoSelect = (roleKey: UserRole) => {
+    if (!isSandboxDemoEnabled()) return;
     const demo = DEMO_USERS[roleKey];
     if (demo) {
       setEmail(demo.email);
@@ -130,8 +147,8 @@ export const LoginPage: React.FC = () => {
             </span>
           </div>
 
-          {/* Quick Demo Access Bar (Development only) */}
-          {!import.meta.env.PROD && (
+          {/* Quick Demo Access Bar (Strictly only when VITE_APP_MODE === 'demo' and !PROD) */}
+          {isSandboxDemoEnabled() && (
             <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">
                 <Sparkles className="w-3.5 h-3.5 text-amber-500" />
@@ -143,7 +160,7 @@ export const LoginPage: React.FC = () => {
                   onClick={() => handleQuickDemoSelect('client_admin')}
                   className="p-1.5 text-left rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-brand-50 dark:hover:bg-brand-950/60 text-slate-700 dark:text-slate-300 font-medium truncate transition"
                 >
-                  Gerente Cliente (San José)
+                  Gerente Cliente (Demo)
                 </button>
                 <button
                   type="button"

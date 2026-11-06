@@ -194,12 +194,15 @@ export const ReportGeneralIncidentPage: React.FC = () => {
     setIsSubmitting(true);
     try {
       const selectedProj = projects.find((p) => p.id === selectedProjectId);
+      if (!selectedProj) {
+        throw new Error('Debes seleccionar un proyecto válido antes de enviar el reporte.');
+      }
 
       await api.createIncidentReport({
-        clientCompanyId: currentUser?.clientCompanyId || 'client-sanjose',
-        developerCompanyId: selectedProj?.developerCompanyId || 'dev-pachax-core',
+        clientCompanyId: selectedProj.clientCompanyId,
+        developerCompanyId: selectedProj.developerCompanyId || 'dev-pachax-core',
         projectId: selectedProjectId,
-        projectName: selectedProj?.name,
+        projectName: selectedProj.name,
         reportedBy: {
           uid: currentUser?.uid || 'user-unknown',
           displayName: currentUser?.displayName || 'Usuario',
@@ -207,7 +210,7 @@ export const ReportGeneralIncidentPage: React.FC = () => {
         },
         category: 'general',
         title: reportTitle,
-        dailyConsent: true,
+        dailySubmissionConsentConfirmed: true,
         items: errors.map((err) => ({
           title: err.title,
           description: err.description,

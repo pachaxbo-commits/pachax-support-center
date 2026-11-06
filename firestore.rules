@@ -110,9 +110,8 @@ service cloud.firestore {
     // 2. DEVELOPER COMPANIES
     // =========================================================================
     match /developerCompanies/{companyId} {
-      allow read: if isDevStaff(companyId);
-      allow update: if isDevAdmin(companyId) &&
-        request.resource.data.id == resource.data.id;
+      allow read: if isAuthenticated() && (isDevStaff(companyId) || isSuperAdmin());
+      allow update: if isDevAdmin(companyId);
       allow create, delete: if isSuperAdmin();
     }
 
@@ -355,7 +354,18 @@ service cloud.firestore {
         (isSuperAdmin() ||
          (resource.data.developerCompanyId != null && isDevAdmin(resource.data.developerCompanyId)) ||
          (resource.data.clientCompanyId != null && isClientAdmin(resource.data.clientCompanyId)));
-      allow write: if false;
+      allow create: if isAuthenticated() &&
+        (isSuperAdmin() ||
+         (request.resource.data.developerCompanyId != null &&
+          isDevAdmin(request.resource.data.developerCompanyId) &&
+          request.resource.data.role != 'superadmin'));
+      allow update: if isAuthenticated() &&
+        (isSuperAdmin() ||
+         (resource.data.developerCompanyId != null &&
+          isDevAdmin(resource.data.developerCompanyId) &&
+          request.resource.data.developerCompanyId == resource.data.developerCompanyId &&
+          request.resource.data.status in ['revoked', 'expired']));
+      allow delete: if isSuperAdmin();
     }
 
     // =========================================================================
@@ -365,7 +375,11 @@ service cloud.firestore {
       allow read: if isAuthenticated() &&
         (isSuperAdmin() ||
          (resource.data.developerCompanyId != null && isDevAdmin(resource.data.developerCompanyId)));
-      allow write: if false;
+      allow create: if isAuthenticated() &&
+        request.resource.data.performedBy == request.auth.uid &&
+        (isSuperAdmin() ||
+         (request.resource.data.developerCompanyId != null && isDevStaff(request.resource.data.developerCompanyId)));
+      allow update, delete: if false;
     }
   }
 }

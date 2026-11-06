@@ -7,8 +7,8 @@ export const RoleSelectorPill: React.FC = () => {
   const { currentUser, role, switchDemoRole, isDemoMode } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
 
-  // In production environments, completely disable and hide the demo role switcher
-  if (import.meta.env.PROD && !isDemoMode) {
+  // Strictly disable and hide the demo role switcher unless explicitly in sandbox demo mode
+  if (!isDemoMode || import.meta.env.VITE_APP_MODE !== 'demo' || import.meta.env.PROD) {
     return null;
   }
 

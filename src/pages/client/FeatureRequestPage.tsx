@@ -126,13 +126,16 @@ export const FeatureRequestPage: React.FC = () => {
     setIsSubmitting(true);
     try {
       const selectedProj = projects.find((p) => p.id === selectedProjectId);
+      if (!selectedProj) {
+        throw new Error('Debes seleccionar un proyecto válido antes de enviar la solicitud.');
+      }
 
       for (const req of requests) {
         await api.createFeatureRequest({
-          clientCompanyId: currentUser?.clientCompanyId || 'client-sanjose',
-          developerCompanyId: selectedProj?.developerCompanyId || 'dev-pachax-core',
+          clientCompanyId: selectedProj.clientCompanyId,
+          developerCompanyId: selectedProj.developerCompanyId || 'dev-pachax-core',
           projectId: selectedProjectId,
-          projectName: selectedProj?.name,
+          projectName: selectedProj.name,
           title: req.title,
           description: req.description,
           businessJustification: req.businessJustification,
